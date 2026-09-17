@@ -1,0 +1,16 @@
+# Environments & Secrets
+.env
+.venv/
+venv/
+
+# Python & Packages
+__pycache__/
+*.pyc
+.uv/
+uv.lock
+
+# Docker Volumes / Local Data (ห้ามนำขึ้น Git เด็ดขาด)
+postgres_data/
+minio_data/
+redis_data/
+mlflow_data/

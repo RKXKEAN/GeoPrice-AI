@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: core-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: core-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: core-minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  backend:
+    build: 
+      context: ./backend
+    container_name: api-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    volumes:
+      - ./backend/app:/app/app
+
+  mlflow:
+    build: 
+      context: ./mlflow
+    container_name: mlflow-server
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      # MLflow ใช้ไลบรารี boto3 ซึ่งจะมองหาตัวแปร AWS โดยอัตโนมัติในการเชื่อมต่อ S3
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    depends_on:
+      - postgres
+      - minio
+
+  ai_worker:
+    build: 
+      context: ./ai_worker
+    container_name: ai-worker
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MINIO_URL=minio:9000
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - redis
+      - minio
+      - mlflow
+      - backend
+    volumes:
+      - ./ai_worker:/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  postgres_data:
+  minio_data:

@@ -1,0 +1,15 @@
+[project]
+name = "hydrogeo-backend"
+version = "0.1.0"
+description = "FastAPI Backend for Spatio-Temporal AI"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "redis",
+    "minio",
+    "arq",
+    "httpx"
+]
