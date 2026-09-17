@@ -16,8 +16,11 @@ services:
     image: redis:7-alpine
     container_name: core-redis
     restart: always
+    command: redis-server --appendonly yes   
     ports:
       - "6379:6379"
+    volumes:                                 
+      - redis_data:/data                     
 
   minio:
     image: quay.io/minio/minio:latest
@@ -94,6 +97,21 @@ services:
               count: all
               capabilities: [gpu]
 
+  label_studio:
+    image: heartexlabs/label-studio:latest
+    container_name: label_studio
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_USERNAME=${LABEL_STUDIO_USERNAME}
+      - LABEL_STUDIO_PASSWORD=${LABEL_STUDIO_PASSWORD}
+    volumes:
+      - label_studio_data:/label-studio/data
+
 volumes:
   postgres_data:
   minio_data:
+  label_studio_data:
+  redis_data:                               
