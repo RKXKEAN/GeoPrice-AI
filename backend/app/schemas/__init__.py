@@ -6,6 +6,8 @@ from app.schemas.assessment import (
     AssessmentResultResponse,
 )
 from app.schemas.webhook import WebhookResultRequest, WebhookResultResponse
+from app.schemas.user import UserBase, UserCreate, UserResponse
+from app.schemas.token import Token, TokenData
 
 __all__ = [
     "LocationBase",
@@ -17,4 +19,9 @@ __all__ = [
     "AssessmentResultResponse",
     "WebhookResultRequest",
     "WebhookResultResponse",
+    "UserBase",
+    "UserCreate",
+    "UserResponse",
+    "Token",
+    "TokenData",
 ]

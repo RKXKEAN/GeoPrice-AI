@@ -11,5 +11,10 @@ dependencies = [
     "redis",
     "minio",
     "arq",
-    "httpx"
+    "httpx",
+    "passlib[bcrypt]",
+    "bcrypt",
+    "python-jose[cryptography]",
+    "python-multipart",
+    "email-validator"
 ]
