@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints.assessments import router as assessments_router
+from app.api.v1.endpoints.predictions import router as predictions_router
 from app.api.v1.endpoints.webhook import router as webhook_router
 from app.api.v1.endpoints.auth import router as auth_router
 
@@ -12,11 +12,11 @@ api_v1_router.include_router(
     tags=["Authentication"]
 )
 
-# Public Assessment endpoints
+# Land Price Prediction endpoints
 api_v1_router.include_router(
-    assessments_router,
-    prefix="/assessments",
-    tags=["Assessments"]
+    predictions_router,
+    prefix="/predictions",
+    tags=["Land Price Predictions"]
 )
 
 # Internal Webhook endpoints

@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 from arq import create_pool
 from arq.connections import RedisSettings, ArqRedis
 from app.config import settings
@@ -29,10 +29,15 @@ async def close_redis_pool():
         _redis_pool = None
         logger.info("ARQ Redis pool closed.")
 
-async def enqueue_assessment_job(job_id: str, location_id: int, image_name: str = "sentinel2_sample.tif") -> bool:
+async def enqueue_prediction_job(
+    job_id: str,
+    plot_id: int,
+    area_size_sqm: float,
+    features: Optional[Dict[str, Any]] = None
+) -> bool:
     """
-    Enqueues an assessment task into Redis for the ARQ AI Worker.
-    Passes job_id, location_id, and image_name to 'predict_flood_risk'.
+    Enqueues a land price prediction task into Redis for the ARQ AI Worker.
+    Passes job_id, plot_id, area_size_sqm, and spatial features to 'predict_land_price'.
     """
     pool = await get_redis_pool()
     if pool is None:
@@ -40,15 +45,15 @@ async def enqueue_assessment_job(job_id: str, location_id: int, image_name: str 
         return False
     
     try:
-        # Enqueue job into ARQ default queue
         job = await pool.enqueue_job(
-            "predict_flood_risk",
-            image_name,
-            location_id,
+            "predict_land_price",
+            plot_id=plot_id,
+            area_size_sqm=area_size_sqm,
+            features=features or {},
             job_id=job_id,
             _job_id=job_id
         )
-        logger.info(f"Enqueued ARQ job for assessment: job_id={job_id}, arq_job={job}")
+        logger.info(f"Enqueued ARQ job for price prediction: job_id={job_id}, arq_job={job}")
         return True
     except Exception as e:
         logger.error(f"Error enqueueing job {job_id} to Redis ARQ: {e}")

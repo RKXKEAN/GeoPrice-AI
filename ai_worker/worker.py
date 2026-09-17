@@ -6,36 +6,54 @@ from arq.connections import RedisSettings
 
 # Check GPU availability
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"🔥 AI Worker Ready! Using device: {device.upper()}")
+print(f"🔥 GeoPrice AI Worker Ready! Using device: {device.upper()}")
 if device == "cuda":
     print(f"GPU Name: {torch.cuda.get_device_name(0)}")
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
-async def predict_flood_risk(ctx, image_name: str, location_id: int, job_id: str = None):
+async def predict_land_price(
+    ctx,
+    plot_id: int,
+    area_size_sqm: float,
+    features: dict = None,
+    job_id: str = None
+):
     """
-    AI Processing task for flood and landslide risk inference.
-    Executes inference and posts results back to backend via internal webhook.
+    AI Valuation task for Land Price Prediction.
+    Executes valuation model inference and posts results back to backend via internal webhook.
     """
-    print(f"[AI Worker] Processing image '{image_name}' for location {location_id} on {device.upper()}... (Job ID: {job_id})")
+    print(f"[GeoPrice Worker] Valuating land plot {plot_id} ({area_size_sqm} sq.m.) on {device.upper()}... (Job ID: {job_id})")
     
-    # Simulate AI Model Inference
+    # Simulate AI Model Valuation Inference (e.g. XGBoost / Spatial Neural Net)
     await asyncio.sleep(2)
     
-    risk_level = "moderate"
-    risk_score = 0.68
+    features = features or {}
+    distance_to_transit = features.get("distance_to_bts_m", 500)
+    
+    # Simulated baseline price logic based on spatial factors
+    base_sqm_price = 280000.0
+    if distance_to_transit < 400:
+        base_sqm_price += 65000.0
+    
+    predicted_price_per_sqm = round(base_sqm_price, 2)
+    total_predicted_price = round(predicted_price_per_sqm * area_size_sqm, 2)
+    confidence_score = 0.93
+    model_version = "geoprice-xgb-v1.0"
+    
     details = {
         "device": device.upper(),
-        "image_processed": image_name,
-        "location_id": location_id,
-        "simulated_flood_depth_m": 1.25,
-        "slope_stability_index": 0.45,
-        "rainfall_estimate_mm": 115.0,
-        "confidence": 0.91
+        "plot_id": plot_id,
+        "area_size_sqm": area_size_sqm,
+        "predicted_price_per_sqm_thb": predicted_price_per_sqm,
+        "total_predicted_price_thb": total_predicted_price,
+        "features_evaluated": features,
+        "comparables_count": 18,
+        "confidence_score": confidence_score
     }
     
-    print(f"[AI Worker] Inference completed for job: {job_id} | Risk: {risk_level} (Score: {risk_score})")
+    print(f"[GeoPrice Worker] Valuation completed for job {job_id} | Price/sqm: {predicted_price_per_sqm:,.2f} THB | Total: {total_predicted_price:,.2f} THB")
 
     # Send results to Backend Internal Webhook if job_id is provided
     if job_id:
@@ -43,22 +61,29 @@ async def predict_flood_risk(ctx, image_name: str, location_id: int, job_id: str
         payload = {
             "job_id": job_id,
             "status": "completed",
-            "risk_level": risk_level,
-            "score": risk_score,
+            "predicted_price_per_sqm": predicted_price_per_sqm,
+            "total_predicted_price": total_predicted_price,
+            "confidence_score": confidence_score,
+            "model_version": model_version,
             "details": details
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.post(webhook_url, json=payload)
                 if res.status_code == 200:
-                    print(f"[AI Worker] Successfully reported results to backend webhook for job: {job_id}")
+                    print(f"[GeoPrice Worker] Successfully reported valuation to backend webhook for job: {job_id}")
                 else:
-                    print(f"[AI Worker] Webhook returned status {res.status_code}: {res.text}")
+                    print(f"[GeoPrice Worker] Webhook returned status {res.status_code}: {res.text}")
         except Exception as e:
-            print(f"[AI Worker] Failed to call webhook at {webhook_url}: {e}")
+            print(f"[GeoPrice Worker] Failed to call webhook at {webhook_url}: {e}")
 
-    return {"status": "success", "risk_level": risk_level, "job_id": job_id}
+    return {
+        "status": "success",
+        "predicted_price_per_sqm": predicted_price_per_sqm,
+        "total_predicted_price": total_predicted_price,
+        "job_id": job_id
+    }
 
 class WorkerSettings:
-    functions = [predict_flood_risk]
+    functions = [predict_land_price]
     redis_settings = RedisSettings.from_dsn(REDIS_URL)

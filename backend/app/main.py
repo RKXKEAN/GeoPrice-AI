@@ -17,7 +17,7 @@ logger = logging.getLogger("hydrogeo.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for application startup and shutdown."""
-    logger.info("Starting HydroGeo AI Backend API...")
+    logger.info("Starting GeoPrice AI Backend API...")
     # Initialize Database Tables
     try:
         init_db()
@@ -37,8 +37,8 @@ async def lifespan(app: FastAPI):
     await close_redis_pool()
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
-    description="Spatio-Temporal AI Ecosystem for Flood & Landslide Risk Assessment",
+    title="GeoPrice AI",
+    description="API for Land Price Prediction and AI Ecosystem",
     version="0.1.0",
     lifespan=lifespan
 )

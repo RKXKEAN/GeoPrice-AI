@@ -2,7 +2,7 @@ import os
 from typing import Optional
 
 class Settings:
-    PROJECT_NAME: str = "HydroGeo AI API"
+    PROJECT_NAME: str = "GeoPrice AI API"
     API_V1_STR: str = "/api/v1"
     
     # Database

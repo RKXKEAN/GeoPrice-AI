@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.job import Job
-from app.models.assessment import RiskAssessment
+from app.models.price_prediction import PricePrediction
 from app.schemas.webhook import WebhookResultRequest, WebhookResultResponse
 
 router = APIRouter()
@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 @router.post(
     "/results",
     response_model=WebhookResultResponse,
-    summary="Update assessment results (Internal Webhook)",
-    description="Internal endpoint called by the AI Worker to update job status and persist inferred risk assessment data."
+    summary="Update price prediction results (Internal Webhook)",
+    description="Internal callback endpoint for the AI Worker to report predicted valuation figures and complete the job."
 )
-def update_assessment_results(
+def update_prediction_results(
     payload: WebhookResultRequest,
     db: Session = Depends(get_db)
 ):
@@ -33,29 +33,41 @@ def update_assessment_results(
         if payload.error_message:
             job.error_message = payload.error_message
 
-        # If completed, create or update RiskAssessment record
+        # If completed, create or update PricePrediction record
         if payload.status == "completed":
-            assessment = db.query(RiskAssessment).filter(RiskAssessment.job_id == job.job_id).first()
-            if assessment:
-                assessment.risk_level = payload.risk_level or "moderate"
-                assessment.score = payload.score if payload.score is not None else 0.5
-                assessment.details_json = payload.details
+            prediction = db.query(PricePrediction).filter(PricePrediction.job_id == job.job_id).first()
+            
+            # Default calculations if values are omitted
+            sqm_price = payload.predicted_price_per_sqm or 250000.0
+            area = job.land_plot.area_size_sqm if job.land_plot else 1600.0
+            total_price = payload.total_predicted_price or (sqm_price * area)
+            confidence = payload.confidence_score if payload.confidence_score is not None else 0.90
+            version = payload.model_version or "geoprice-xgb-v1.0"
+
+            if prediction:
+                prediction.predicted_price_per_sqm = sqm_price
+                prediction.total_predicted_price = total_price
+                prediction.confidence_score = confidence
+                prediction.model_version = version
+                prediction.details_json = payload.details
             else:
-                assessment = RiskAssessment(
+                prediction = PricePrediction(
                     job_id=job.job_id,
-                    location_id=job.location_id,
-                    risk_level=payload.risk_level or "moderate",
-                    score=payload.score if payload.score is not None else 0.5,
+                    plot_id=job.plot_id,
+                    predicted_price_per_sqm=sqm_price,
+                    total_predicted_price=total_price,
+                    confidence_score=confidence,
+                    model_version=version,
                     details_json=payload.details
                 )
-                db.add(assessment)
+                db.add(prediction)
 
         db.commit()
-        logger.info(f"Updated job {job.job_id} to status '{job.status}' via webhook.")
+        logger.info(f"Updated job {job.job_id} to status '{job.status}' with land price prediction.")
         
         return WebhookResultResponse(
             status="success",
-            message="Job status and assessment results saved successfully.",
+            message="Job status and land price prediction saved successfully.",
             job_id=job.job_id
         )
     except Exception as e:
