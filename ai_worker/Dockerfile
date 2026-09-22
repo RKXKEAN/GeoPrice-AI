@@ -7,7 +7,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 COPY pyproject.toml ./
-RUN uv pip install --system -r pyproject.toml --extra-index-url https://download.pytorch.org/whl/cu121
+RUN UV_HTTP_TIMEOUT=300 uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+    UV_HTTP_TIMEOUT=300 uv pip install --system -r pyproject.toml
 
 COPY . .
 

@@ -7,7 +7,7 @@ class UserBase(BaseModel):
     email: str = Field(
         ...,
         pattern=r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$",
-        example="researcher@hydrogeo.ai",
+        example="researcher@geoprice.ai",
         description="Valid user email address"
     )
 

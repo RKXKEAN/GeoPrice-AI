@@ -12,7 +12,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("hydrogeo.main")
+logger = logging.getLogger("geoprice.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Teardown / Graceful Shutdown
-    logger.info("Shutting down HydroGeo AI Backend API...")
+    logger.info("Shutting down GeoPrice AI Backend API...")
     await close_redis_pool()
 
 app = FastAPI(

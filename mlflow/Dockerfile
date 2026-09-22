@@ -1,6 +1,8 @@
 FROM python:3.13-slim
 
-RUN pip install --no-cache-dir mlflow psycopg2-binary boto3
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+RUN uv pip install --system mlflow psycopg2-binary boto3
 
 EXPOSE 5000
 

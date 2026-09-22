@@ -15,3 +15,5 @@ minio_data/
 redis_data/
 mlflow_data/
 label_studio_data/
+
+PROJECT_KNOWLEDGE.md

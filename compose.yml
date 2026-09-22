@@ -1,7 +1,9 @@
+name: geoprice
+
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: core-postgres
+    container_name: geoprice-postgres
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -14,7 +16,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: core-redis
+    container_name: geoprice-redis
     restart: always
     command: redis-server --appendonly yes   
     ports:
@@ -24,7 +26,7 @@ services:
 
   minio:
     image: quay.io/minio/minio:latest
-    container_name: core-minio
+    container_name: geoprice-minio
     restart: always
     command: server /data --console-address ":9001"
     environment:
@@ -39,7 +41,7 @@ services:
   backend:
     build: 
       context: ./backend
-    container_name: api-backend
+    container_name: geoprice-backend
     restart: always
     ports:
       - "8000:8000"
@@ -56,7 +58,7 @@ services:
   mlflow:
     build: 
       context: ./mlflow
-    container_name: mlflow-server
+    container_name: geoprice-mlflow
     restart: always
     ports:
       - "5000:5000"
@@ -67,7 +69,7 @@ services:
       - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_DB=mlflow_db
     depends_on:
       - postgres
       - minio
@@ -75,7 +77,7 @@ services:
   ai_worker:
     build: 
       context: ./ai_worker
-    container_name: ai-worker
+    container_name: geoprice-ai-worker
     restart: always
     environment:
       - REDIS_URL=redis://redis:6379
@@ -99,7 +101,7 @@ services:
 
   label_studio:
     image: heartexlabs/label-studio:latest
-    container_name: label_studio
+    container_name: geoprice-label-studio
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -110,8 +112,20 @@ services:
     volumes:
       - label_studio_data:/label-studio/data
 
+  frontend:
+    build:
+      context: ./frontend
+    container_name: geoprice-frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   minio_data:
   label_studio_data:
-  redis_data:                               
+  redis_data:

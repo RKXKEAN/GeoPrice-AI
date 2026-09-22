@@ -1,5 +1,5 @@
 [project]
-name = "hydrogeo-ai-worker"
+name = "geoprice-ai-worker"
 version = "0.1.0"
 description = "ARQ Worker for YOLO and LSTM Processing"
 requires-python = ">=3.12"
