@@ -9,8 +9,7 @@ import {
   RotateCcw,
   Building2,
   TrendingUp,
-  Cpu,
-  Info
+  Cpu
 } from 'lucide-react';
 import { MapComponent } from './components/MapComponent';
 import type { DrawnPlotData } from './components/MapComponent';
@@ -145,6 +144,7 @@ export function App() {
         <MapComponent 
           onPlotDrawn={handlePlotDrawn} 
           onPlotCleared={handlePlotCleared} 
+          plotData={plotData}
         />
       </div>
 
@@ -231,10 +231,10 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <div className="p-4 rounded-lg bg-blue-950/20 border border-blue-900/40 text-xs text-blue-300/80 flex items-start gap-2.5">
-                <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-                <span>
-                  ใช้เครื่องมือ <strong>Polygon</strong> หรือ <strong>Rectangle</strong> ที่มุมขวาบนของแผนที่ เพื่อเริ่มวาดขอบเขตแปลงที่ดิน
+              <div className="p-3.5 rounded-lg bg-blue-950/30 border border-blue-800/50 text-xs text-blue-200/90 flex items-start gap-2.5 shadow-sm">
+                <span className="text-base shrink-0 mt-0.5">💡</span>
+                <span className="leading-relaxed">
+                  <strong>วิธีวาดแปลงที่ดิน:</strong> คลิกจุดตามมุมของที่ดินไปเรื่อยๆ (ไม่จำกัดจำนวนจุด) และ <strong>คลิกที่จุดเริ่มต้นอีกครั้ง</strong> เพื่อเสร็จสิ้นการวาด
                 </span>
               </div>
             )}
