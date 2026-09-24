@@ -54,8 +54,3 @@ app.add_middleware(
 
 # Include API v1 Router
 app.include_router(api_v1_router, prefix=settings.API_V1_STR)
-
-# Health Check Endpoint
-@app.get("/api/v1/health", tags=["Health"])
-def health_check():
-    return {"status": "ok", "message": "Backend API is running flawlessly"}

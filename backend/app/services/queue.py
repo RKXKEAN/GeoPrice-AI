@@ -58,3 +58,29 @@ async def enqueue_prediction_job(
     except Exception as e:
         logger.error(f"Error enqueueing job {job_id} to Redis ARQ: {e}")
         return False
+
+async def enqueue_training_job(
+    job_id: str,
+    dataset_info: Dict[str, Any]
+) -> bool:
+    """
+    Enqueues a model training task into Redis for the ARQ AI Worker.
+    Passes dataset_info to 'train_price_model'.
+    """
+    pool = await get_redis_pool()
+    if pool is None:
+        logger.warning(f"Could not enqueue training job {job_id}: Redis pool is unavailable.")
+        return False
+
+    try:
+        job = await pool.enqueue_job(
+            "train_price_model",
+            dataset_info,
+            _job_id=job_id
+        )
+        logger.info(f"Enqueued ARQ job for price model training: job_id={job_id}, arq_job={job}")
+        return True
+    except Exception as e:
+        logger.error(f"Error enqueueing training job {job_id} to Redis ARQ: {e}")
+        return False
+
