@@ -1,8 +1,9 @@
 import uuid
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from app.models.land_plot import LandPlot
 from app.models.job import Job
 from app.schemas.prediction import (
@@ -114,3 +115,69 @@ def get_prediction_status(
         created_at=job.created_at,
         updated_at=job.updated_at
     )
+
+
+@router.websocket("/ws/{job_id}")
+async def websocket_prediction_status(
+    websocket: WebSocket,
+    job_id: str,
+):
+    """
+    Real-time WebSocket endpoint for tracking prediction job status.
+    Polls the database every 1 second and sends results as soon as the status is completed or failed.
+    """
+    await websocket.accept()
+    session = SessionLocal()
+    try:
+        while True:
+            session.expire_all()
+            job = session.get(Job, job_id)
+            if not job:
+                await websocket.send_json({
+                    "status": "not_found",
+                    "error_message": f"Prediction job with ID '{job_id}' was not found."
+                })
+                break
+
+            if job.status in ("completed", "failed"):
+                plot_data = None
+                if job.land_plot:
+                    plot_data = LandPlotResponse.model_validate(job.land_plot).model_dump(mode="json")
+
+                prediction_data = None
+                if job.prediction:
+                    prediction_data = PricePredictionDetailResponse.model_validate(job.prediction).model_dump(mode="json")
+
+                response_payload = {
+                    "job_id": job.job_id,
+                    "status": job.status,
+                    "error_message": job.error_message,
+                    "land_plot": plot_data,
+                    "price_prediction": prediction_data,
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+                }
+                await websocket.send_json(response_payload)
+                break
+            else:
+                await websocket.send_json({
+                    "job_id": job.job_id,
+                    "status": job.status,
+                    "message": "AI valuation model is processing..."
+                })
+
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket client disconnected for job {job_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error for job {job_id}: {e}")
+        try:
+            await websocket.send_json({"status": "error", "error_message": str(e)})
+        except Exception:
+            pass
+    finally:
+        session.close()
+        try:
+            await websocket.close()
+        except Exception:
+            pass

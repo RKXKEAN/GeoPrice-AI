@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { 
   MapContainer, 
   TileLayer, 
@@ -7,6 +7,8 @@ import {
   LayersControl, 
   FeatureGroup, 
   LayerGroup,
+  Polyline,
+  Tooltip,
   useMap 
 } from 'react-leaflet';
 import L from 'leaflet';
@@ -27,6 +29,8 @@ interface MapComponentProps {
   onPlotDrawn: (data: DrawnPlotData) => void;
   onPlotCleared: () => void;
   plotData?: DrawnPlotData | null;
+  onRadarScanned?: (count: number) => void;
+  nearestPOI?: any;
 }
 
 // Fix default Leaflet icon paths
@@ -109,8 +113,74 @@ const MapResizer = () => {
   return null;
 };
 
-export const MapComponent = ({ onPlotDrawn, onPlotCleared, plotData }: MapComponentProps) => {
+export const MapComponent = ({ onPlotDrawn, onPlotCleared, plotData, onRadarScanned, nearestPOI }: MapComponentProps) => {
   const featureGroupRef = useRef<L.FeatureGroup | null>(null);
+  const [radarCircle, setRadarCircle] = useState<any>(null);
+  const [scannedBuildingIds, setScannedBuildingIds] = useState<Set<string | number>>(new Set());
+
+  // Perform AI Radar 200m spatial analysis when plotData changes
+  useEffect(() => {
+    if (!plotData || !plotData.geometry) {
+      setRadarCircle(null);
+      setScannedBuildingIds(new Set());
+      onRadarScanned?.(0);
+      return;
+    }
+
+    try {
+      const centroid = turf.centroid(plotData.geometry);
+      // Create 200-meter radius circle (0.2 kilometers)
+      const circle = turf.circle(centroid, 0.2, { units: 'kilometers' });
+      setRadarCircle(circle);
+
+      // Check which buildings in hatyai_parcels.json intersect with or are inside the 200m circle
+      const hitIds = new Set<string | number>();
+      for (const feature of (hatYaiParcelsData as any).features) {
+        try {
+          if (turf.booleanIntersects(circle, feature)) {
+            const id = feature.id ?? feature.properties?.id;
+            if (id !== undefined) hitIds.add(id);
+          }
+        } catch {
+          // ignore malformed geometry
+        }
+      }
+
+      setScannedBuildingIds(hitIds);
+      onRadarScanned?.(hitIds.size);
+    } catch (err) {
+      console.error('Error during AI Radar scan analysis:', err);
+    }
+  }, [plotData, onRadarScanned]);
+
+  // Dynamic parcel styling: glowing red if inside 200m radar scan
+  const getParcelStyle = useCallback((feature: any) => {
+    const fid = feature?.id ?? feature?.properties?.id;
+    const isScanned = fid !== undefined && (
+      scannedBuildingIds.has(fid) ||
+      scannedBuildingIds.has(String(fid)) ||
+      scannedBuildingIds.has(Number(fid))
+    );
+
+    if (isScanned) {
+      return {
+        fillColor: '#ef4444',
+        color: '#f87171',
+        weight: 2,
+        fillOpacity: 0.6,
+        opacity: 1,
+        className: 'scanned-building-glow',
+      };
+    }
+
+    return {
+      color: '#f59e0b',
+      weight: 1.5,
+      opacity: 0.9,
+      fillColor: '#fbbf24',
+      fillOpacity: 0.15,
+    };
+  }, [scannedBuildingIds]);
 
   // Sync external clearing (e.g. from Sidebar 'ล้างแปลง')
   useEffect(() => {
@@ -266,22 +336,28 @@ export const MapComponent = ({ onPlotDrawn, onPlotCleared, plotData }: MapCompon
           {/* Overlay 4: เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่ - OpenStreetMap Cadastral/Building Polygons) */}
           <LayersControl.Overlay checked name="เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่)">
             <GeoJSON
+              key={`parcels-${scannedBuildingIds.size}-${plotData?.latitude ?? 'none'}`}
               data={hatYaiParcelsData as any}
-              style={{
-                color: '#f59e0b',
-                weight: 1.5,
-                opacity: 0.9,
-                fillColor: '#fbbf24',
-                fillOpacity: 0.15,
-              }}
+              style={getParcelStyle}
               onEachFeature={(feature, layer) => {
                 if (feature.properties) {
                   const p = feature.properties;
+                  const fid = feature.id ?? p.id;
+                  const isScanned = fid !== undefined && (
+                    scannedBuildingIds.has(fid) ||
+                    scannedBuildingIds.has(String(fid)) ||
+                    scannedBuildingIds.has(Number(fid))
+                  );
                   layer.bindPopup(`
-                    <div style="font-family: system-ui, sans-serif; font-size: 12px; color: #1e293b; min-width: 190px; line-height: 1.5;">
+                    <div style="font-family: system-ui, sans-serif; font-size: 12px; color: #1e293b; min-width: 200px; line-height: 1.5;">
                       <div style="font-weight: 700; font-size: 13px; color: #0f172a; margin-bottom: 4px; border-bottom: 1px solid #e2e8f0; padding-bottom: 3px;">
                         📌 ${p.name || 'แปลงที่ดิน / สิ่งปลูกสร้าง'}
                       </div>
+                      ${isScanned ? `
+                      <div style="display: inline-block; font-size: 10px; font-weight: 700; color: #ef4444; background: #fee2e2; border: 1px solid #fca5a5; padding: 2px 6px; border-radius: 6px; margin-bottom: 6px;">
+                        📡 ตรวจพบใน AI Radar (200m)
+                      </div>
+                      ` : ''}
                       <div style="color: #475569; margin-bottom: 2px;">
                         ประเภท: <span style="color: #2563eb; font-weight: 600;">${p.land_type || 'ทั่วไป'}</span>
                       </div>
@@ -309,6 +385,46 @@ export const MapComponent = ({ onPlotDrawn, onPlotCleared, plotData }: MapCompon
             />
           </LayersControl.Overlay>
         </LayersControl>
+
+        {/* AI Radar Scan Circle (200m Radius) */}
+        {radarCircle && (
+          <GeoJSON
+            key={`radar-${plotData?.latitude}-${plotData?.longitude}`}
+            data={radarCircle as any}
+            style={{
+              color: '#00f2fe',
+              dashArray: '5, 10',
+              fillColor: '#00f2fe',
+              fillOpacity: 0.1,
+              weight: 2,
+              className: 'radar-scan-circle',
+            }}
+          />
+        )}
+
+        {/* Visual Road Distance Line to Nearest POI */}
+        {plotData && nearestPOI && nearestPOI.coordinates && (
+          <Polyline
+            key={`poi-line-${nearestPOI.id}-${plotData.latitude}-${plotData.longitude}`}
+            positions={[
+              [plotData.latitude, plotData.longitude],
+              [nearestPOI.coordinates[1], nearestPOI.coordinates[0]],
+            ]}
+            pathOptions={{
+              color: (nearestPOI.isWithin500m ?? nearestPOI.distanceMeters <= 500) ? '#10b981' : '#38bdf8',
+              weight: 2.5,
+              dashArray: '6, 8',
+              opacity: 0.9,
+            }}
+          >
+            <Tooltip permanent direction="center" className="poi-distance-tooltip">
+              <span className="font-sans font-semibold text-xs text-white flex items-center gap-1">
+                {(nearestPOI.isWithin500m ?? nearestPOI.distanceMeters <= 500) ? '🎯 ' : '🚗 '}
+                {nearestPOI.name}: <strong>{nearestPOI.distanceMeters} ม.</strong> (OSRM)
+              </span>
+            </Tooltip>
+          </Polyline>
+        )}
 
         {/* FeatureGroup for user-drawn land plots with Glowing Neon Styles */}
         <FeatureGroup ref={featureGroupRef}>

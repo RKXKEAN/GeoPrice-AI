@@ -16,5 +16,6 @@ dependencies = [
     "bcrypt",
     "python-jose[cryptography]",
     "python-multipart",
-    "email-validator"
+    "email-validator",
+    "websockets"
 ]

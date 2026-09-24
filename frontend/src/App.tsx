@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { 
   MapPin, 
   Layers, 
@@ -9,18 +9,32 @@ import {
   RotateCcw,
   Building2,
   TrendingUp,
-  Cpu
+  Cpu,
+  Radar,
+  Navigation,
+  Radio
 } from 'lucide-react';
+import * as turf from '@turf/turf';
+import hatYaiLandmarksData from './data/hatyai_landmarks.json';
 import { MapComponent } from './components/MapComponent';
 import type { DrawnPlotData } from './components/MapComponent';
-import { 
-  submitPricePrediction, 
-  getPredictionStatus 
-} from './services/api';
+import { submitPricePrediction } from './services/api';
 import type {
   PredictionJobResponse, 
   PredictionResult 
 } from './services/api';
+
+export interface NearbyPOI {
+  id: string;
+  name: string;
+  category: string;
+  category_th: string;
+  distanceMeters: number;
+  straightDistanceMeters: number;
+  coordinates: [number, number]; // [lon, lat]
+  badge?: string;
+  isWithin500m: boolean;
+}
 
 export function App() {
   // Plot state
@@ -29,12 +43,18 @@ export function App() {
   const [landUseZone, setLandUseZone] = useState('สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)');
   const [predictionYears, setPredictionYears] = useState(1);
 
+  // AI Radar Scan (200m) & OSRM POI states (500m)
+  const [scannedBuildings, setScannedBuildings] = useState<number | null>(null);
+  const [nearbyPOIs, setNearbyPOIs] = useState<NearbyPOI[]>([]);
+  const [nearestPOI, setNearestPOI] = useState<NearbyPOI | null>(null);
+  const [loadingPOIs, setLoadingPOIs] = useState(false);
+
   // Submission & Job tracking state
   const [loading, setLoading] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [activeJob, setActiveJob] = useState<PredictionJobResponse | null>(null);
   const [jobResult, setJobResult] = useState<PredictionResult | null>(null);
-  const [isPolling, setIsPolling] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const handlePlotDrawn = useCallback((data: DrawnPlotData) => {
     setPlotData(data);
@@ -45,6 +65,21 @@ export function App() {
     setPlotData(null);
     setActiveJob(null);
     setJobResult(null);
+    setScannedBuildings(null);
+    setNearbyPOIs([]);
+    setNearestPOI(null);
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {
+        // ignore error
+      }
+      wsRef.current = null;
+    }
+  }, []);
+
+  const handleRadarScanned = useCallback((count: number) => {
+    setScannedBuildings(count);
   }, []);
 
   // Helper: Convert Square Meters to Thai Traditional Land Units (Rai - Ngan - Wah)
@@ -62,7 +97,120 @@ export function App() {
     return parts.join(' ');
   };
 
-  // Submit Price Prediction to Backend API
+  // 3. ระบบเส้นทางจริง OSRM (ในส่วนจัดการ Map/Sidebar):
+  // ปรับระยะห่าง POI ครอบคลุมถึง 500 เมตร (<= 500m)
+  useEffect(() => {
+    if (!plotData || !plotData.geometry) {
+      setNearbyPOIs([]);
+      setNearestPOI(null);
+      setLoadingPOIs(false);
+      return;
+    }
+
+    let isCancelled = false;
+
+    const findNearbyPOIs = async () => {
+      setLoadingPOIs(true);
+      try {
+        const centroid = turf.centroid(plotData.geometry);
+        const [lon1, lat1] = centroid.geometry.coordinates;
+
+        // คำนวณระยะเส้นตรงไปยัง Landmarks ทั้งหมด 15 แห่ง
+        const allLandmarks = (hatYaiLandmarksData as any).features.map((feature: any) => {
+          const [lon2, lat2] = feature.geometry.coordinates;
+          const straightDistKm = turf.distance(
+            turf.point([lon1, lat1]),
+            turf.point([lon2, lat2]),
+            { units: 'kilometers' }
+          );
+          return {
+            feature,
+            lon2,
+            lat2,
+            straightDistKm,
+            straightDistM: Math.round(straightDistKm * 1000),
+          };
+        }).sort((a: any, b: any) => a.straightDistKm - b.straightDistKm);
+
+        // ดึงตัวที่ระยะเส้นตรง <= 0.8 km เพื่อครอบคลุมระยะถนนจริงถึง 500m (และคงไว้อย่างน้อย 1 สถานที่ที่ใกล้ที่สุดเสมอ)
+        const candidates = allLandmarks.filter((item: any, idx: number) => item.straightDistKm <= 0.8 || idx === 0);
+
+        const results: NearbyPOI[] = [];
+        let closest: NearbyPOI | null = null;
+        let minDrivingDist = Infinity;
+
+        // เรียกใช้ OSRM API สำหรับ candidates
+        for (const item of candidates) {
+          if (isCancelled) break;
+          let drivingDist = item.straightDistM * 1.35; // Fallback ประมาณการระยะทางถนน
+
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const res = await fetch(
+              `https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${item.lon2},${item.lat2}?overview=false`,
+              { signal: controller.signal }
+            );
+            clearTimeout(timeoutId);
+            if (res.ok) {
+              const data = await res.json();
+              if (data?.routes?.[0]?.distance !== undefined) {
+                drivingDist = data.routes[0].distance;
+              }
+            }
+          } catch (err) {
+            console.warn('OSRM routing fetch failed, using fallback road distance:', err);
+          }
+
+          const roundedDrivingDist = Math.round(drivingDist);
+          const isWithin500m = roundedDrivingDist <= 500;
+          const poiObj: NearbyPOI = {
+            id: item.feature.id || item.feature.properties?.name,
+            name: item.feature.properties?.name,
+            category: item.feature.properties?.category,
+            category_th: item.feature.properties?.category_th,
+            distanceMeters: roundedDrivingDist,
+            straightDistanceMeters: item.straightDistM,
+            coordinates: [item.lon2, item.lat2],
+            badge: item.feature.properties?.badge,
+            isWithin500m,
+          };
+
+          // บันทึกลง nearbyPOIs หากระยะทางขับรถจริง <= 500m
+          if (poiObj.isWithin500m) {
+            results.push(poiObj);
+          }
+
+          if (roundedDrivingDist < minDrivingDist) {
+            minDrivingDist = roundedDrivingDist;
+            closest = poiObj;
+          }
+        }
+
+        // เรียงลำดับ POI จากใกล้ไปไกล
+        results.sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+        if (!isCancelled) {
+          setNearbyPOIs(results);
+          setNearestPOI(closest);
+        }
+      } catch (err) {
+        console.error('Error finding nearby POIs:', err);
+      } finally {
+        if (!isCancelled) {
+          setLoadingPOIs(false);
+        }
+      }
+    };
+
+    findNearbyPOIs();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [plotData]);
+
+  // Submit Price Prediction to Backend API with Real-Time WebSocket
   const handlePredict = async () => {
     if (!plotData) {
       setSubmissionError('กรุณาวาดแปลงที่ดิน (Polygon หรือ Rectangle) บนแผนที่ก่อนประเมินราคา');
@@ -73,6 +221,16 @@ export function App() {
     setSubmissionError(null);
     setActiveJob(null);
     setJobResult(null);
+
+    // Close any previous WebSocket connection
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {
+        // ignore
+      }
+      wsRef.current = null;
+    }
 
     try {
       const response = await submitPricePrediction({
@@ -85,12 +243,61 @@ export function App() {
         features: {
           prediction_years: predictionYears,
           distance_to_center_km: 1.5,
+          nearest_poi_name: nearestPOI?.name,
+          nearest_poi_distance_m: nearestPOI?.distanceMeters,
+          nearest_poi_category: nearestPOI?.category,
           road_access: true,
         },
       });
 
       setActiveJob(response);
-      setIsPolling(true);
+      setJobResult({
+        job_id: response.job_id,
+        status: 'pending',
+        created_at: response.created_at,
+      } as PredictionResult);
+
+      // 2. การเชื่อมต่อ WebSocket แบบ Real-Time
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = window.location.hostname || 'localhost';
+      const wsUrl = `${wsProtocol}//${wsHost}:8000/api/v1/predictions/ws/${response.job_id}`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log(`WebSocket connected for job: ${response.job_id}`);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log('WebSocket received:', data);
+
+          if (data.status === 'completed' || data.status === 'failed') {
+            setJobResult(data);
+            ws.close();
+          } else if (data.status) {
+            setJobResult((prev) => ({
+              ...(prev || {
+                job_id: response.job_id,
+                status: data.status,
+                created_at: new Date().toISOString(),
+              }),
+              status: data.status,
+            } as PredictionResult));
+          }
+        } catch (parseErr) {
+          console.error('Failed to parse WebSocket message:', parseErr);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket connection closed.');
+      };
     } catch (err: any) {
       console.error('Failed to submit prediction:', err);
       const errMsg = err.response?.data?.detail || err.message || 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ Backend ได้';
@@ -100,25 +307,18 @@ export function App() {
     }
   };
 
-  // Poll job status when activeJob is present
+  // Clean up WebSocket on component unmount
   useEffect(() => {
-    if (!activeJob?.job_id || !isPolling) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const result = await getPredictionStatus(activeJob.job_id);
-        setJobResult(result);
-
-        if (result.status === 'completed' || result.status === 'failed') {
-          setIsPolling(false);
+    return () => {
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {
+          // ignore
         }
-      } catch (err) {
-        console.warn('Status poll failed:', err);
       }
-    }, 2500);
-
-    return () => clearInterval(interval);
-  }, [activeJob?.job_id, isPolling]);
+    };
+  }, []);
 
   return (
     <div className="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
@@ -140,11 +340,13 @@ export function App() {
           </div>
         </div>
 
-        {/* Map Rendering */}
+        {/* Map Rendering with 200m Radar Scan & Visual Connection Line */}
         <MapComponent 
           onPlotDrawn={handlePlotDrawn} 
           onPlotCleared={handlePlotCleared} 
           plotData={plotData}
+          onRadarScanned={handleRadarScanned}
+          nearestPOI={nearestPOI}
         />
       </div>
 
@@ -211,24 +413,50 @@ export function App() {
               </select>
             </div>
 
-            {/* Coordinates and Area Display */}
+            {/* Coordinates, Area and Nearest POI Display */}
             {plotData ? (
-              <div className="grid grid-cols-2 gap-3 pt-1">
-                <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800">
-                  <div className="text-[11px] text-slate-400">จุดศูนย์กลาง (Lat, Lng)</div>
-                  <div className="text-xs font-mono font-medium text-slate-200 mt-1">
-                    {plotData.latitude}, {plotData.longitude}
+              <div className="space-y-2 pt-1">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">จุดศูนย์กลาง (Lat, Lng)</div>
+                    <div className="text-xs font-mono font-medium text-slate-200 mt-0.5 truncate">
+                      {plotData.latitude}, {plotData.longitude}
+                    </div>
+                  </div>
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">ขนาดพื้นที่คำนวณ</div>
+                    <div className="text-xs font-bold text-emerald-400 mt-0.5">
+                      {plotData.areaSqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-medium">
+                      ({formatThaiLandArea(plotData.areaSqm)})
+                    </div>
                   </div>
                 </div>
-                <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800">
-                  <div className="text-[11px] text-slate-400">ขนาดพื้นที่คำนวณ</div>
-                  <div className="text-sm font-bold text-emerald-400 mt-0.5">
-                    {plotData.areaSqm.toLocaleString()} <span className="text-xs font-normal text-slate-400">ตร.ม.</span>
+
+                {/* Nearest POI Fast Summary Badge */}
+                {nearestPOI && (
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between gap-2 shadow-sm">
+                    <div className="min-w-0">
+                      <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                        <MapPin className="w-3 h-3 text-cyan-400 shrink-0" /> สถานที่สำคัญใกล้เคียงที่สุด
+                      </div>
+                      <div className="text-xs font-semibold text-slate-200 truncate mt-0.5">
+                        {nearestPOI.name}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
+                        nearestPOI.isWithin500m
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
+                      }`}>
+                        {nearestPOI.distanceMeters} ม.
+                      </span>
+                      <div className="text-[9px] text-slate-500 mt-0.5">ระยะถนน OSRM</div>
+                    </div>
                   </div>
-                  <div className="text-[11px] text-slate-400 font-medium">
-                    ({formatThaiLandArea(plotData.areaSqm)})
-                  </div>
-                </div>
+                )}
               </div>
             ) : (
               <div className="p-3.5 rounded-lg bg-blue-950/30 border border-blue-800/50 text-xs text-blue-200/90 flex items-start gap-2.5 shadow-sm">
@@ -236,6 +464,110 @@ export function App() {
                 <span className="leading-relaxed">
                   <strong>วิธีวาดแปลงที่ดิน:</strong> คลิกจุดตามมุมของที่ดินไปเรื่อยๆ (ไม่จำกัดจำนวนจุด) และ <strong>คลิกที่จุดเริ่มต้นอีกครั้ง</strong> เพื่อเสร็จสิ้นการวาด
                 </span>
+              </div>
+            )}
+          </div>
+
+          {/* 4. AI Radar Scan 200m Section (คงไว้ที่ 200 เมตร ตามข้อกำหนด) */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Radar className="w-4 h-4 text-cyan-400 animate-pulse" /> AI Radar (200m)
+              </label>
+              <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold border transition-colors ${
+                scannedBuildings !== null
+                  ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                  : 'bg-slate-800/80 text-slate-500 border-slate-700/60'
+              }`}>
+                {scannedBuildings !== null ? `พบสิ่งปลูกสร้าง ${scannedBuildings} หลัง` : 'รอวาดแปลงที่ดิน'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              สแกนและนับสิ่งปลูกสร้างในรัศมี 200m จากจุดกึ่งกลางแปลงที่ดินด้วย Turf.js Spatial Intersection พร้อมเน้นสีแดงเรืองแสงบนแผนที่
+            </p>
+          </div>
+
+          {/* 3. Nearby POIs Section (OSRM API Driving Route <= 500m) */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Navigation className="w-3.5 h-3.5 text-emerald-400" /> สถานที่สำคัญระยะถนนจริง (OSRM &le; 500m)
+              </label>
+              {loadingPOIs && (
+                <span className="text-[10px] text-cyan-400 flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin"></span>
+                  กำลังคำนวณ...
+                </span>
+              )}
+            </div>
+
+            {plotData ? (
+              <div className="space-y-2.5">
+                {/* Highlight POIs within 500m if found */}
+                {nearbyPOIs.length > 0 ? (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-semibold text-emerald-400 flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                      ตรวจพบสถานที่ในระยะเดินรถ &le; 500 ม. ({nearbyPOIs.length} แห่ง)
+                    </div>
+                    {nearbyPOIs.map((poi, idx) => (
+                      <div key={idx} className="bg-emerald-950/30 p-2.5 rounded-lg border border-emerald-800/50 flex items-center justify-between gap-2 shadow-sm">
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-white truncate">{poi.name}</div>
+                          <div className="text-[10px] text-slate-300 flex items-center gap-1.5 mt-0.5">
+                            <span className="px-1.5 py-0.5 bg-emerald-900/60 text-emerald-300 rounded text-[9px]">{poi.category_th}</span>
+                            {poi.badge && <span className="text-slate-400">&bull; {poi.badge}</span>}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-900/80 border border-emerald-700/60 px-2 py-0.5 rounded-md">
+                            {poi.distanceMeters} ม.
+                          </span>
+                          <div className="text-[9px] text-slate-400 mt-0.5">ถนนจริง OSRM</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-2.5 rounded-lg bg-slate-900/50 border border-slate-800 text-[11px] text-slate-400 flex items-center gap-1.5">
+                    <span className="text-amber-400 shrink-0">ℹ️</span>
+                    <span>ไม่พบสถานที่สำคัญในระยะเดินรถ &le; 500 ม. (อยู่นอกรัศมีเดินรถใกล้)</span>
+                  </div>
+                )}
+
+                {/* Always show Nearest Landmark with its exact driving distance! */}
+                {nearestPOI && (
+                  <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 space-y-1.5">
+                    <div className="text-[11px] font-semibold text-cyan-400 flex items-center justify-between">
+                      <span className="flex items-center gap-1">📍 สถานที่สำคัญที่ใกล้ที่สุด</span>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        เส้นตรง: {nearestPOI.straightDistanceMeters} ม.
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate">{nearestPOI.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">
+                          หมวดหมู่: <span className="text-slate-200">{nearestPOI.category_th}</span> {nearestPOI.badge && `(${nearestPOI.badge})`}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className={`text-sm font-mono font-bold px-2 py-0.5 rounded border ${
+                          nearestPOI.isWithin500m
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                            : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                        }`}>
+                          {nearestPOI.distanceMeters} ม.
+                        </span>
+                        <div className="text-[9px] text-slate-400 mt-0.5">เส้นทางเดินรถ OSRM</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-3 rounded-lg bg-slate-900/40 border border-slate-800/70 text-xs text-slate-500 text-center">
+                กรุณาวาดแปลงที่ดินเพื่อค้นหาและวัดระยะห่าง POI
               </div>
             )}
           </div>
@@ -311,29 +643,34 @@ export function App() {
             </div>
           )}
 
-          {/* Job Queue Status & Response Details */}
+          {/* Job Queue Status & Response Details (Real-Time WebSocket) */}
           {activeJob && (
             <div className="bg-slate-950/80 rounded-xl border border-slate-800 p-4 space-y-3">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
                 <div className="text-xs font-semibold text-slate-300 flex items-center gap-2">
                   <Cpu className="w-4 h-4 text-indigo-400" />
-                  สถานะการประมวลผล (HTTP 202)
+                  สถานะการประมวลผล
                 </div>
-                <span
-                  className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
-                    jobResult?.status === 'completed'
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/40 px-1.5 py-0.5 rounded flex items-center gap-1">
+                    <Radio className="w-3 h-3 text-cyan-400 animate-pulse" /> WebSocket
+                  </span>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                      jobResult?.status === 'completed'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : jobResult?.status === 'failed'
+                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
+                    }`}
+                  >
+                    {jobResult?.status === 'completed'
+                      ? 'ประเมินราคาเสร็จสมบูรณ์'
                       : jobResult?.status === 'failed'
-                      ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                      : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
-                  }`}
-                >
-                  {jobResult?.status === 'completed'
-                    ? 'ประเมินราคาเสร็จสมบูรณ์'
-                    : jobResult?.status === 'failed'
-                    ? 'การประเมินล้มเหลว'
-                    : 'กำลังประมวลผล (อยู่ในคิว)'}
-                </span>
+                      ? 'การประเมินล้มเหลว'
+                      : 'กำลังประมวลผล (Real-Time)'}
+                  </span>
+                </div>
               </div>
 
               <div className="space-y-1.5 text-xs">

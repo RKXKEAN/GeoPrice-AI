@@ -232,3 +232,60 @@ html, body, #root {
   margin: 12px 14px !important;
   line-height: 1.5 !important;
 }
+
+/* ========================================================== */
+/* 📡 AI RADAR SCAN 200M ANIMATIONS & GLOW STYLES             */
+/* ========================================================== */
+.radar-scan-circle {
+  filter: drop-shadow(0 0 8px #00f2fe) drop-shadow(0 0 16px rgba(0, 242, 254, 0.4));
+  animation: radarCirclePulse 2.5s infinite ease-in-out;
+}
+
+@keyframes radarCirclePulse {
+  0% {
+    stroke-opacity: 0.5;
+    fill-opacity: 0.06;
+    stroke-width: 2px;
+  }
+  50% {
+    stroke-opacity: 1;
+    fill-opacity: 0.16;
+    stroke-width: 3px;
+  }
+  100% {
+    stroke-opacity: 0.5;
+    fill-opacity: 0.06;
+    stroke-width: 2px;
+  }
+}
+
+.scanned-building-glow {
+  filter: drop-shadow(0 0 6px rgba(239, 68, 68, 0.8)) drop-shadow(0 0 12px rgba(239, 68, 68, 0.5));
+  animation: buildingHighlight 2s infinite alternate;
+}
+
+@keyframes buildingHighlight {
+  0% {
+    fill-opacity: 0.45;
+  }
+  100% {
+    fill-opacity: 0.75;
+  }
+}
+
+.poi-distance-tooltip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(8px) !important;
+  border: 1px solid rgba(56, 189, 248, 0.5) !important;
+  border-radius: 8px !important;
+  padding: 4px 10px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6) !important;
+  color: #ffffff !important;
+  font-family: system-ui, sans-serif !important;
+}
+
+.poi-distance-tooltip::before {
+  display: none !important;
+}
+
+
