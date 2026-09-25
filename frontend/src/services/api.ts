@@ -1,7 +1,11 @@
 import axios from 'axios';
 
-// Get API base URL from environment or fallback to localhost:8000
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Get API base URL from environment or fallback to relative path (Vite proxy)
+const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  return '';
+};
+const API_BASE_URL = getApiBaseUrl();
 
 export interface GeoJSONGeometry {
   type: string;

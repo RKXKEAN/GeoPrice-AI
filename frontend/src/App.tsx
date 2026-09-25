@@ -259,8 +259,8 @@ export function App() {
 
       // 2. การเชื่อมต่อ WebSocket แบบ Real-Time
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsHost = window.location.hostname || 'localhost';
-      const wsUrl = `${wsProtocol}//${wsHost}:8000/api/v1/predictions/ws/${response.job_id}`;
+      const wsHost = window.location.host;
+      const wsUrl = `${wsProtocol}//${wsHost}/api/v1/predictions/ws/${response.job_id}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
