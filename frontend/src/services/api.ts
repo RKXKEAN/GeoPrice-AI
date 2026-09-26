@@ -75,3 +75,12 @@ export async function getPredictionStatus(jobId: string): Promise<PredictionResu
   const response = await apiClient.get<PredictionResult>(`/api/v1/predictions/${jobId}`);
   return response.data;
 }
+
+/**
+ * Retrieve active appraisal dataset GeoJSON features for Select Mode
+ */
+export async function fetchActiveGeoJSON(): Promise<any> {
+  const response = await apiClient.get('/api/v1/appraisal-data/active-geojson');
+  return response.data;
+}
+

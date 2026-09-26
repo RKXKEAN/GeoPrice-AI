@@ -216,21 +216,32 @@ html, body, #root {
 .leaflet-popup-content-wrapper {
   background: rgba(15, 23, 42, 0.95) !important;
   backdrop-filter: blur(12px) !important;
-  border: 1px solid rgba(56, 189, 248, 0.3) !important;
+  border: 1px solid rgba(56, 189, 248, 0.4) !important;
   border-radius: 14px !important;
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6), 0 0 20px rgba(56, 189, 248, 0.2) !important;
-  color: #f1f5f9 !important;
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7), 0 0 20px rgba(56, 189, 248, 0.25) !important;
+  color: #f8fafc !important;
   padding: 0 !important;
 }
 
 .leaflet-popup-tip {
   background: rgba(15, 23, 42, 0.95) !important;
-  border: 1px solid rgba(56, 189, 248, 0.3) !important;
+  border: 1px solid rgba(56, 189, 248, 0.4) !important;
 }
 
 .leaflet-popup-content {
   margin: 12px 14px !important;
   line-height: 1.5 !important;
+  color: #f8fafc !important;
+}
+
+.leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 8px 8px 0 0 !important;
+  font-size: 16px !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: #ffffff !important;
 }
 
 /* ========================================================== */
@@ -287,5 +298,35 @@ html, body, #root {
 .poi-distance-tooltip::before {
   display: none !important;
 }
+
+/* ========================================================== */
+/* 🎯 SELECT MODE PARCEL GLOW & HIGHLIGHT                     */
+/* ========================================================== */
+.select-mode-parcel {
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.select-mode-parcel:hover {
+  filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.7));
+}
+
+.selected-parcel-glow {
+  filter: drop-shadow(0 0 10px #10b981) drop-shadow(0 0 20px rgba(16, 185, 129, 0.7));
+  animation: selectedParcelPulse 2s infinite alternate;
+  cursor: pointer;
+}
+
+@keyframes selectedParcelPulse {
+  0% {
+    stroke-width: 3px;
+    fill-opacity: 0.55;
+  }
+  100% {
+    stroke-width: 4.5px;
+    fill-opacity: 0.75;
+  }
+}
+
 
 

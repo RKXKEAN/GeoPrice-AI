@@ -41,6 +41,7 @@ def init_db(max_retries: int = 5, retry_interval: int = 2):
             logger.info("Initializing database tables...")
             # Import models so Base.metadata knows about them
             import app.models  # noqa: F401
+            from app.models.appraisal_dataset import AppraisalDataset  # noqa: F401
             Base.metadata.create_all(bind=engine)
             logger.info("Database tables initialized successfully.")
             return

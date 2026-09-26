@@ -12,12 +12,16 @@ import {
   Cpu,
   Radar,
   Navigation,
-  Radio
+  Radio,
+  Pencil,
+  MousePointerClick,
+  Database
 } from 'lucide-react';
 import * as turf from '@turf/turf';
 import hatYaiLandmarksData from './data/hatyai_landmarks.json';
 import { MapComponent } from './components/MapComponent';
 import type { DrawnPlotData } from './components/MapComponent';
+import { FeedbackWidget } from './components/FeedbackWidget';
 import { submitPricePrediction } from './services/api';
 import type {
   PredictionJobResponse, 
@@ -37,6 +41,9 @@ export interface NearbyPOI {
 }
 
 export function App() {
+  // Mode state: 'draw' | 'select'
+  const [interactionMode, setInteractionMode] = useState<'draw' | 'select'>('draw');
+
   // Plot state
   const [plotData, setPlotData] = useState<DrawnPlotData | null>(null);
   const [plotName, setPlotName] = useState('พื้นที่ตรวจสอบ GeoPrice');
@@ -58,6 +65,9 @@ export function App() {
 
   const handlePlotDrawn = useCallback((data: DrawnPlotData) => {
     setPlotData(data);
+    if (data.plotName) {
+      setPlotName(data.plotName);
+    }
     setSubmissionError(null);
   }, []);
 
@@ -347,6 +357,7 @@ export function App() {
           plotData={plotData}
           onRadarScanned={handleRadarScanned}
           nearestPOI={nearestPOI}
+          interactionMode={interactionMode}
         />
       </div>
 
@@ -371,6 +382,34 @@ export function App() {
 
         {/* Sidebar Content */}
         <div className="p-5 space-y-5 flex-1">
+          {/* Mode Switcher Toggle: Draw Mode vs Select Mode */}
+          <div className="bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 flex items-center gap-1.5 shadow-inner">
+            <button
+              type="button"
+              onClick={() => setInteractionMode('draw')}
+              className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+                interactionMode === 'draw'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 border border-blue-400/30'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              }`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              <span>โหมดวาดแปลง (Draw)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setInteractionMode('select')}
+              className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+                interactionMode === 'select'
+                  ? 'bg-cyan-600 text-white shadow-md shadow-cyan-500/25 border border-cyan-400/30'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
+              }`}
+            >
+              <MousePointerClick className="w-3.5 h-3.5" />
+              <span>โหมดเลือกแปลง (Select)</span>
+            </button>
+          </div>
+
           {/* Plot Information Section */}
           <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
             <div className="flex items-center justify-between">
@@ -415,7 +454,25 @@ export function App() {
 
             {/* Coordinates, Area and Nearest POI Display */}
             {plotData ? (
-              <div className="space-y-2 pt-1">
+              <div className="space-y-2.5 pt-1">
+                {/* Active Dataset parcel metadata badge if selected */}
+                {plotData.parcelId && (
+                  <div className="bg-cyan-950/40 p-2.5 rounded-lg border border-cyan-800/50 flex items-center justify-between gap-2 shadow-sm">
+                    <div className="flex items-center gap-1.5 text-xs text-cyan-300 font-semibold">
+                      <Database className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <span>รหัสแปลง:</span>
+                      <span className="font-mono text-white bg-cyan-900/60 px-1.5 py-0.5 rounded border border-cyan-700/50">
+                        {plotData.parcelId}
+                      </span>
+                    </div>
+                    {plotData.priceRef && (
+                      <div className="text-[11px] text-amber-300 font-medium">
+                        ราคาอ้างอิง: <span className="font-bold">฿{plotData.priceRef.toLocaleString()}</span> / ตร.ม.
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
                     <div className="text-[10px] text-slate-400">จุดศูนย์กลาง (Lat, Lng)</div>
@@ -424,7 +481,9 @@ export function App() {
                     </div>
                   </div>
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">ขนาดพื้นที่คำนวณ</div>
+                    <div className="text-[10px] text-slate-400">
+                      {plotData.source === 'select' ? 'ขนาดพื้นที่ (Active Dataset)' : 'ขนาดพื้นที่คำนวณ'}
+                    </div>
                     <div className="text-xs font-bold text-emerald-400 mt-0.5">
                       {plotData.areaSqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
                     </div>
@@ -457,6 +516,13 @@ export function App() {
                     </div>
                   </div>
                 )}
+              </div>
+            ) : interactionMode === 'select' ? (
+              <div className="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-800/50 text-xs text-cyan-200/90 flex items-start gap-2.5 shadow-sm">
+                <span className="text-base shrink-0 mt-0.5">🎯</span>
+                <span className="leading-relaxed">
+                  <strong>คลิกเลือกแปลงที่ดินบนแผนที่</strong> เพื่อดูข้อมูลและประเมินราคา (พิกัดและขนาดพื้นที่ถูกดึงจาก Active Dataset โดยตรง)
+                </span>
               </div>
             ) : (
               <div className="p-3.5 rounded-lg bg-blue-950/30 border border-blue-800/50 text-xs text-blue-200/90 flex items-start gap-2.5 shadow-sm">
@@ -713,6 +779,11 @@ export function App() {
                       {Math.round(jobResult.price_prediction.confidence_score * 100)}%
                     </span>
                   </div>
+
+                  {/* Human-in-the-loop (HITL) Micro-Feedback Widget */}
+                  {jobResult.status === 'completed' && activeJob?.job_id && (
+                    <FeedbackWidget jobId={activeJob.job_id} />
+                  )}
                 </div>
               )}
             </div>

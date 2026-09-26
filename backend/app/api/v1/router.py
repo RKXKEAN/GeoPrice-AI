@@ -2,10 +2,17 @@ from fastapi import APIRouter
 from app.api.v1.endpoints.predictions import router as predictions_router
 from app.api.v1.endpoints.webhook import router as webhook_router
 from app.api.v1.endpoints.auth import router as auth_router
-from app.api.v1.endpoints import models, storage, data, annotation, health, monitoring
+from app.api.v1.endpoints import models, storage, data, annotation, health, monitoring, appraisal_data, pois
 
 api_v1_router = APIRouter()
 api_router = api_v1_router
+
+# Points of Interest (Overpass API Proxy)
+api_router.include_router(
+    pois.router,
+    prefix="/pois",
+    tags=["Points of Interest"]
+)
 
 # Authentication & RBAC endpoints
 api_router.include_router(
@@ -33,6 +40,13 @@ api_router.include_router(
     data.router,
     prefix="/data",
     tags=["Data Management"]
+)
+
+# Appraisal Dataset Management endpoints
+api_router.include_router(
+    appraisal_data.router,
+    prefix="/appraisal-data",
+    tags=["Appraisal Data"]
 )
 
 # Data Annotation endpoints (Label Studio)

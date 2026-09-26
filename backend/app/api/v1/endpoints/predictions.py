@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
 from app.models.land_plot import LandPlot
 from app.models.job import Job
+from app.models.appraisal_dataset import AppraisalDataset
 from app.schemas.prediction import (
     PredictionRequest,
     PredictionResponse,
@@ -30,6 +31,15 @@ async def create_price_prediction(
     db: Session = Depends(get_db)
 ):
     try:
+        # Query active appraisal dataset and attach MinIO path to features
+        if request.features is None:
+            request.features = {}
+
+        active_dataset = db.query(AppraisalDataset).filter(AppraisalDataset.is_active.is_(True)).first()
+        if active_dataset:
+            request.features["active_appraisal_file"] = f"s3://{active_dataset.bucket_name}/{active_dataset.file_name}"
+            logger.info(f"Attached active appraisal dataset path: {request.features['active_appraisal_file']}")
+
         # 1. Create LandPlot record
         land_plot = LandPlot(
             plot_name=request.plot_name,
@@ -78,6 +88,9 @@ async def create_price_prediction(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to initiate valuation job: {str(e)}"
         )
+
+# Alias for backwards compatibility / explicit naming
+create_prediction_job = create_price_prediction
 
 @router.get(
     "/{job_id}",

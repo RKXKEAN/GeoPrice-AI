@@ -1,0 +1,324 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "title": "สถานที่สำคัญและ Landmark อำเภอหาดใหญ่ (พิกัดแม่นยำสูง)",
+    "total": 15
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "id": "landmark-1",
+      "properties": {
+        "name": "มหาวิทยาลัยสงขลานครินทร์ (ม.อ. หาดใหญ่)",
+        "category": "university",
+        "category_th": "มหาวิทยาลัย",
+        "color": "#6366f1",
+        "description": "ศูนย์กลางการศึกษาและการวิจัยระดับอุดมศึกษาที่ใหญ่ที่สุดในภาคใต้ ถนนกาญจนวนิช",
+        "badge": "มหาวิทยาลัยชั้นนำ",
+        "latitude": 7.0096597,
+        "longitude": 100.4959583
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4959583,
+          7.0096597
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-2",
+      "properties": {
+        "name": "มหาวิทยาลัยหาดใหญ่",
+        "category": "university",
+        "category_th": "มหาวิทยาลัย",
+        "color": "#6366f1",
+        "description": "มหาวิทยาลัยเอกชนชั้นนำ ถนนพลพิชัย ต.คอหงส์",
+        "badge": "มหาวิทยาลัยเอกชน",
+        "latitude": 6.980980,
+        "longitude": 100.465440
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.465440,
+          6.980980
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-3",
+      "properties": {
+        "name": "โรงพยาบาลสงขลานครินทร์ (ม.อ.)",
+        "category": "hospital",
+        "category_th": "โรงพยาบาล",
+        "color": "#ef4444",
+        "description": "โรงพยาบาลศูนย์การแพทย์ระดับตติยภูมิชั้นสูงและโรงเรียนแพทย์ของภาคใต้",
+        "badge": "โรงพยาบาลศูนย์แพทย์",
+        "latitude": 7.0066733,
+        "longitude": 100.4946672
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4946672,
+          7.0066733
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-4",
+      "properties": {
+        "name": "โรงพยาบาลหาดใหญ่",
+        "category": "hospital",
+        "category_th": "โรงพยาบาล",
+        "color": "#ef4444",
+        "description": "โรงพยาบาลศูนย์ประจำจังหวัด ถนนรัถการ",
+        "badge": "โรงพยาบาลศูนย์รัฐ",
+        "latitude": 7.0166654,
+        "longitude": 100.4674503
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4674503,
+          7.0166654
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-5",
+      "properties": {
+        "name": "โรงพยาบาลกรุงเทพหาดใหญ่",
+        "category": "hospital",
+        "category_th": "โรงพยาบาล",
+        "color": "#ef4444",
+        "description": "โรงพยาบาลเอกชนมาตรฐานสากลในเครือ BDMS ซอย 13 เพชรเกษม / ถนนคลองเรียน 1",
+        "badge": "โรงพยาบาลเอกชนชั้นนำ",
+        "latitude": 7.0160263,
+        "longitude": 100.4864657
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4864657,
+          7.0160263
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-6",
+      "properties": {
+        "name": "โรงพยาบาลราษฎร์ยินดี",
+        "category": "hospital",
+        "category_th": "โรงพยาบาล",
+        "color": "#ef4444",
+        "description": "โรงพยาบาลเอกชนชั้นนำใจกลางเมือง ถนนราษฎร์ยินดี",
+        "badge": "โรงพยาบาลเอกชน",
+        "latitude": 7.0006753,
+        "longitude": 100.4803761
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4803761,
+          7.0006753
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-7",
+      "properties": {
+        "name": "โรงเรียนหาดใหญ่วิทยาลัย (ญ.ว.)",
+        "category": "school",
+        "category_th": "โรงเรียน",
+        "color": "#f59e0b",
+        "description": "โรงเรียนมัธยมศึกษาขนาดใหญ่พิเศษระดับแนวหน้าของภาคใต้ ถนนเพชรเกษม",
+        "badge": "โรงเรียนมัธยมชั้นนำ",
+        "latitude": 7.0165472,
+        "longitude": 100.4757077
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4757077,
+          7.0165472
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-8",
+      "properties": {
+        "name": "โรงเรียนหาดใหญ่วิทยาลัยสมบูรณ์กุลกันยา (ญ.ส.)",
+        "category": "school",
+        "category_th": "โรงเรียน",
+        "color": "#f59e0b",
+        "description": "โรงเรียนมัธยมศึกษาชื่อดัง ถนนพลพิชัย",
+        "badge": "โรงเรียนมัธยมศึกษา",
+        "latitude": 7.0023588,
+        "longitude": 100.4582654
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4582654,
+          7.0023588
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-9",
+      "properties": {
+        "name": "โรงเรียนแสงทองวิทยา",
+        "category": "school",
+        "category_th": "โรงเรียน",
+        "color": "#f59e0b",
+        "description": "โรงเรียนคาทอลิกชื่อดัง ถนนธรรมนูญวิถี",
+        "badge": "โรงเรียนเอกชน",
+        "latitude": 7.0053343,
+        "longitude": 100.4750060
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4750060,
+          7.0053343
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-10",
+      "properties": {
+        "name": "โรงเรียนธิดานุเคราะห์",
+        "category": "school",
+        "category_th": "โรงเรียน",
+        "color": "#f59e0b",
+        "description": "โรงเรียนคาทอลิกหญิงล้วนชื่อดัง ถนนแสงศรี / จุติอนุสรณ์",
+        "badge": "โรงเรียนเอกชน",
+        "latitude": 7.0122811,
+        "longitude": 100.4742676
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4742676,
+          7.0122811
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-11",
+      "properties": {
+        "name": "ท่าอากาศยานนานาชาติหาดใหญ่ (สนามบินหาดใหญ่)",
+        "category": "transport",
+        "category_th": "คมนาคมขนส่ง",
+        "color": "#06b6d4",
+        "description": "สนามบินนานาชาติหลักของภาคใต้ตอนล่าง ตำบลคลองหอยโข่ง / ทุ่งตำเสา",
+        "badge": "สนามบินนานาชาติ",
+        "latitude": 6.9364010,
+        "longitude": 100.3939912
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.3939912,
+          6.9364010
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-12",
+      "properties": {
+        "name": "สถานีรถไฟชุมทางหาดใหญ่",
+        "category": "transport",
+        "category_th": "คมนาคมขนส่ง",
+        "color": "#06b6d4",
+        "description": "ชุมทางรถไฟที่ใหญ่ที่สุดในภาคใต้ ถนนรถไฟ เชื่อมสายใต้และมาเลเซีย",
+        "badge": "ชุมทางรถไฟสายใต้",
+        "latitude": 7.0039414,
+        "longitude": 100.4675799
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4675799,
+          7.0039414
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-13",
+      "properties": {
+        "name": "เซ็นทรัล หาดใหญ่ (Central Hatyai)",
+        "category": "commercial",
+        "category_th": "ย่านการค้า",
+        "color": "#ec4899",
+        "description": "ศูนย์การค้าไลฟ์สไตล์ขนาดใหญ่ที่สุดในภาคใต้ ถนนกาญจนวนิช",
+        "badge": "ศูนย์การค้าแลนด์มาร์ก",
+        "latitude": 6.9918582,
+        "longitude": 100.4829622
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4829622,
+          6.9918582
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-14",
+      "properties": {
+        "name": "ตลาดกิมหยง",
+        "category": "commercial",
+        "category_th": "ย่านการค้า",
+        "color": "#ec4899",
+        "description": "ตลาดการค้ายอดนิยมใจกลางเมืองหาดใหญ่ แหล่งของฝาก ถนนนิพัทธ์อุทิศ 3",
+        "badge": "ตลาดยอดนิยม",
+        "latitude": 7.0084387,
+        "longitude": 100.4699925
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4699925,
+          7.0084387
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "landmark-15",
+      "properties": {
+        "name": "ตลาดน้ำคลองแห",
+        "category": "commercial",
+        "category_th": "ย่านการค้า",
+        "color": "#ec4899",
+        "description": "ตลาดน้ำเชิงวัฒนธรรมแห่งแรกของภาคใต้ ตำบลคลองแห",
+        "badge": "แหล่งท่องเที่ยวชื่อดัง",
+        "latitude": 7.0461795,
+        "longitude": 100.4738196
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          100.4738196,
+          7.0461795
+        ]
+      }
+    }
+  ]
+}

@@ -25,6 +25,12 @@ from app.schemas.storage import StorageUploadResponse, PresignedUrlResponse
 from app.schemas.data import DatasetItem, DatasetListResponse
 from app.schemas.annotation import LabelStudioProject, AnnotationProjectsResponse
 from app.schemas.monitoring import PredictionFeedback, FeedbackResponse
+from app.schemas.appraisal_dataset import (
+    AppraisalDatasetBase,
+    AppraisalDatasetCreate,
+    AppraisalDatasetUpdate,
+    AppraisalDatasetResponse,
+)
 
 __all__ = [
     "LandPlotBase",
@@ -56,4 +62,8 @@ __all__ = [
     "AnnotationProjectsResponse",
     "PredictionFeedback",
     "FeedbackResponse",
+    "AppraisalDatasetBase",
+    "AppraisalDatasetCreate",
+    "AppraisalDatasetUpdate",
+    "AppraisalDatasetResponse",
 ]
