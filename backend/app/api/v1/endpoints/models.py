@@ -220,3 +220,105 @@ async def trigger_model_training(
         dataset_info=dataset_info,
         created_at=datetime.now(timezone.utc)
     )
+
+@router.get(
+    "/vision/status",
+    summary="Check automated satellite vision retrain readiness",
+    description="Inspects MinIO 'images' bucket to summarize available 6-month imagery periods and checks automated retrain pipeline standby status."
+)
+def get_vision_retrain_status(
+    minio_svc: MinIOService = Depends(get_minio_service)
+):
+    """
+    Returns available satellite datasets and automated training readiness.
+    Guarantees safety guard status (training on standby).
+    """
+    try:
+        objects = list(minio_svc.client.list_objects("images", recursive=True))
+        periods: Dict[str, int] = {}
+        for obj in objects:
+            parts = obj.object_name.split("/")
+            if len(parts) > 1:
+                period = parts[0]
+                periods[period] = periods.get(period, 0) + 1
+        
+        latest_period = "2026_03-08" if "2026_03-08" in periods else (sorted(periods.keys())[-1] if periods else "none")
+        count_latest = periods.get(latest_period, 0)
+        
+        return {
+            "status": "standby_ready",
+            "auto_train_enabled": False,
+            "safety_policy": "Automated retraining is configured and on standby. Training is NOT started until explicitly confirmed.",
+            "latest_imagery_period": latest_period,
+            "images_in_latest_period": count_latest,
+            "image_spec": "640x640 JPEG (Ultralytics YOLOv8 compatible)",
+            "all_available_periods": periods,
+            "trigger_endpoint": "POST /api/v1/models/vision/trigger"
+        }
+    except Exception as e:
+        logger.error(f"Error checking vision retrain status: {e}")
+        return {
+            "status": "standby_ready",
+            "auto_train_enabled": False,
+            "latest_imagery_period": "2026_03-08",
+            "error": str(e)
+        }
+
+@router.post(
+    "/vision/trigger",
+    summary="Trigger or simulate automated vision model retrain",
+    description="Validates satellite dataset in MinIO. If confirm_start is false, returns readiness confirmation without starting training."
+)
+async def trigger_vision_retrain(
+    dataset_period: str = "2026_03-08",
+    epochs: int = 50,
+    batch_size: int = 16,
+    confirm_start: bool = False,
+    minio_svc: MinIOService = Depends(get_minio_service)
+):
+    """
+    Automated Retrain Trigger:
+    - If confirm_start is False: Performs full pre-flight validation and returns STANDBY status.
+    - If confirm_start is True: Enqueues job to Redis queue for AI Worker.
+    """
+    job_id = str(uuid.uuid4())
+    
+    objects = list(minio_svc.client.list_objects("images", prefix=f"{dataset_period}/", recursive=True))
+    if not objects:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Dataset period 'images/{dataset_period}' has no images in MinIO. Please ensure images are ingested first."
+        )
+    
+    if not confirm_start:
+        return {
+            "status": "standby_ready",
+            "job_id": job_id,
+            "message": f"Pre-flight check passed for '{dataset_period}' ({len(objects)} images ready). Training was NOT started because confirm_start=False (Safety Policy). Set confirm_start=True to proceed.",
+            "dataset_period": dataset_period,
+            "total_images": len(objects),
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+    
+    pool = await get_redis_pool()
+    if pool is not None:
+        await pool.enqueue_job(
+            "retrain_vision_model",
+            dataset_period=dataset_period,
+            epochs=epochs,
+            batch_size=batch_size,
+            force_execute=True,
+            job_id=job_id
+        )
+    
+    return {
+        "status": "training_queued",
+        "job_id": job_id,
+        "message": f"Vision model retrain enqueued for '{dataset_period}' with {len(objects)} images.",
+        "dataset_period": dataset_period,
+        "total_images": len(objects),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+

@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { 
   MapContainer, 
   TileLayer, 
-  WMSTileLayer, 
   GeoJSON, 
   LayersControl, 
   FeatureGroup, 
@@ -453,8 +452,8 @@ export const MapComponent = ({
 
         {/* Layer Controls: Base layers and Overlays */}
         <LayersControl position="topright">
-          {/* Base Layer 1: แผนที่ถนนมาตรฐาน (OpenStreetMap Standard - คมชัด โหลดเร็ว ฟรี 100% ไม่มีลายน้ำ) */}
-          <LayersControl.BaseLayer checked name="OpenStreetMap Standard">
+          {/* Base Layer 1: แผนที่ถนนมาตรฐาน (OpenStreetMap) */}
+          <LayersControl.BaseLayer checked name="แผนที่ถนน (OpenStreetMap)">
             <TileLayer
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -462,26 +461,8 @@ export const MapComponent = ({
             />
           </LayersControl.BaseLayer>
 
-          {/* Base Layer 2: แผนที่สีพาสเทลเพื่อมนุษยธรรม (OpenStreetMap HOT) */}
-          <LayersControl.BaseLayer name="OpenStreetMap HOT (สีพาสเทล)">
-            <TileLayer
-              url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png"
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, Tiles by HOT'
-              maxZoom={19}
-            />
-          </LayersControl.BaseLayer>
-
-          {/* Base Layer 3: แผนที่ภูมิประเทศและเส้นทาง Esri (World Topo Map) */}
-          <LayersControl.BaseLayer name="Esri World Topo Map (ภูมิประเทศ)">
-            <TileLayer
-              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
-              attribution='Tiles &copy; Esri'
-              maxZoom={19}
-            />
-          </LayersControl.BaseLayer>
-
-          {/* Base Layer 4: ภาพถ่ายดาวเทียม (Google Satellite) */}
-          <LayersControl.BaseLayer name="ภาพถ่ายดาวเทียม (Satellite)">
+          {/* Base Layer 2: ภาพถ่ายดาวเทียม (Google Satellite) */}
+          <LayersControl.BaseLayer name="ภาพถ่ายดาวเทียม">
             <TileLayer
               url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
               attribution="&copy; Google Maps Satellite Hybrid"
@@ -600,16 +581,7 @@ export const MapComponent = ({
             </LayersControl.Overlay>
           )}
 
-          {/* Overlay 5: เส้นรูปแปลงที่ดิน (กรมที่ดิน WMS - ทางเลือก) */}
-          <LayersControl.Overlay name="เส้นรูปแปลงที่ดิน (กรมที่ดิน WMS)">
-            <WMSTileLayer
-              url="https://landsmaps.dol.go.th/arcgis/rest/services/DOL_CADASTRAL/MapServer/WMSServer"
-              layers="0"
-              format="image/png"
-              transparent={true}
-              attribution="&copy; กรมที่ดิน (Department of Lands)"
-            />
-          </LayersControl.Overlay>
+
         </LayersControl>
 
         {/* Active Dataset GeoJSON Layer (Select Mode) */}
