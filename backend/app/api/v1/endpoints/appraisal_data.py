@@ -1,4 +1,6 @@
 import json
+import csv
+import io
 import math
 import logging
 from pathlib import Path
@@ -105,6 +107,67 @@ def get_active_appraisal_geojson(
                             props.setdefault("latitude", c_lat)
                             props.setdefault("longitude", c_lon)
                     return data
+            elif active_dataset.file_name.endswith(".csv"):
+                reader = csv.DictReader(io.StringIO(raw))
+                features = []
+                for idx, row in enumerate(reader):
+                    try:
+                        lat = float(row.get("latitude") or 7.0084)
+                        lon = float(row.get("longitude") or 100.4767)
+                        area = float(row.get("area_sqm") or 250.0)
+                        price_ref = float(row.get("gov_appraisal_price_wah") or row.get("price_ref") or 50000.0)
+                        pid = row.get("parcel_id") or f"PARCEL-{idx+1:04d}"
+                        road_name = row.get("road_name") or row.get("name") or f"แปลงที่ดิน {pid}"
+                        sd = row.get("subdistrict") or "หาดใหญ่"
+
+                        delta = math.sqrt(area) / 111320.0 / 2.0
+                        geom = {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [round(lon - delta, 6), round(lat - delta, 6)],
+                                [round(lon + delta, 6), round(lat - delta, 6)],
+                                [round(lon + delta, 6), round(lat + delta, 6)],
+                                [round(lon - delta, 6), round(lat + delta, 6)],
+                                [round(lon - delta, 6), round(lat - delta, 6)]
+                            ]]
+                        }
+                        features.append({
+                            "type": "Feature",
+                            "id": pid,
+                            "properties": {
+                                "parcel_id": pid,
+                                "area_size": area,
+                                "price_ref": price_ref,
+                                "latitude": lat,
+                                "longitude": lon,
+                                "name": road_name,
+                                "land_type": row.get("land_type", "ทั่วไป"),
+                                "street": road_name,
+                                "district": row.get("district", "อำเภอหาดใหญ่"),
+                                "province": row.get("province", "สงขลา"),
+                                "subdistrict": sd,
+                                "appraisal_cycle": row.get("appraisal_cycle", ""),
+                                "period": row.get("period", ""),
+                                "active_dataset": active_dataset.file_name,
+                                "bucket": active_dataset.bucket_name
+                            },
+                            "geometry": geom
+                        })
+                    except Exception:
+                        continue
+                if features:
+                    return {
+                        "type": "FeatureCollection",
+                        "metadata": {
+                            "dataset_id": active_dataset.id,
+                            "bucket_name": active_dataset.bucket_name,
+                            "file_name": active_dataset.file_name,
+                            "is_active": True,
+                            "description": active_dataset.description,
+                            "total_parcels": len(features)
+                        },
+                        "features": features
+                    }
         except Exception as e:
             logger.warning(f"Error reading dataset from MinIO: {e}, using local sample dataset fallback")
 
