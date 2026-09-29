@@ -295,11 +295,12 @@ export const MapComponent = ({
     }
 
     return {
-      color: '#f59e0b',
-      weight: 1.5,
-      opacity: 0.9,
-      fillColor: '#fbbf24',
-      fillOpacity: 0.2,
+      color: '#00f2fe',
+      weight: 1.8,
+      opacity: 0.95,
+      fillColor: '#0284c7',
+      fillOpacity: 0.3,
+      className: 'real-parcel-polygon',
     };
   }, [scannedBuildingIds, selectedParcelId]);
 
@@ -578,6 +579,12 @@ export const MapComponent = ({
                     layer.on({
                       click: () => {
                         handleSelectParcel(feature);
+                      },
+                      mouseover: (e: any) => {
+                        e.target.setStyle({ fillOpacity: 0.6, weight: 2.8, color: '#38bdf8' });
+                      },
+                      mouseout: () => {
+                        (layer as any).setStyle(getParcelStyle(feature));
                       }
                     });
 
