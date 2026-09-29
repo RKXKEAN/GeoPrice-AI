@@ -165,24 +165,28 @@ export const MapComponent = ({
       });
   }, []);
 
-  // Fetch active dataset GeoJSON when entering Select Mode
+  // Initial load of latest active appraisal dataset GeoJSON from MinIO (1,600 parcels across 13 subdistricts)
   useEffect(() => {
-    if (interactionMode === 'select' && !activeDataset && !isLoadingDataset) {
-      setIsLoadingDataset(true);
-      fetchActiveGeoJSON()
-        .then((data) => {
-          if (data && data.features) {
-            setActiveDataset(data);
-          }
-        })
-        .catch((err) => {
-          console.error('Failed to load active appraisal dataset GeoJSON:', err);
-        })
-        .finally(() => {
+    let isMounted = true;
+    setIsLoadingDataset(true);
+    fetchActiveGeoJSON()
+      .then((data) => {
+        if (isMounted && data && data.features) {
+          setActiveDataset(data);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load active MinIO appraisal dataset, using local fallback:', err);
+      })
+      .finally(() => {
+        if (isMounted) {
           setIsLoadingDataset(false);
-        });
-    }
-  }, [interactionMode, activeDataset, isLoadingDataset]);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Sync external parcel ID and clearing
   useEffect(() => {
@@ -234,9 +238,9 @@ export const MapComponent = ({
       const circle = turf.circle(centroid, 0.2, { units: 'kilometers' });
       setRadarCircle(circle);
 
-      // Check which parcels/buildings intersect with or are inside the 200m circle
+      // Check which parcels/buildings intersect with or are inside the 200m circle (using MinIO latest dataset)
       const hitIds = new Set<string | number>();
-      const featuresToCheck = (interactionMode === 'select' && activeDataset?.features) 
+      const featuresToCheck = (activeDataset?.features && activeDataset.features.length > 0) 
         ? activeDataset.features 
         : (hatYaiParcelsData as any).features;
 
@@ -258,14 +262,26 @@ export const MapComponent = ({
     }
   }, [plotData, onRadarScanned, interactionMode, activeDataset]);
 
-  // Dynamic parcel styling: glowing red if inside 200m radar scan
+  // Dynamic parcel styling: glowing green if selected, glowing red if inside 200m radar scan
   const getParcelStyle = useCallback((feature: any) => {
-    const fid = feature?.id ?? feature?.properties?.id;
+    const p = feature?.properties || {};
+    const fid = feature?.id ?? p.parcel_id ?? p.id;
+    const isSelected = selectedParcelId !== null && (selectedParcelId === fid || String(selectedParcelId) === String(fid));
     const isScanned = fid !== undefined && (
       scannedBuildingIds.has(fid) ||
       scannedBuildingIds.has(String(fid)) ||
       scannedBuildingIds.has(Number(fid))
     );
+
+    if (isSelected) {
+      return {
+        color: '#10b981',
+        weight: 3.5,
+        fillColor: '#059669',
+        fillOpacity: 0.65,
+        className: 'selected-parcel-glow',
+      };
+    }
 
     if (isScanned) {
       return {
@@ -283,9 +299,9 @@ export const MapComponent = ({
       weight: 1.5,
       opacity: 0.9,
       fillColor: '#fbbf24',
-      fillOpacity: 0.15,
+      fillOpacity: 0.2,
     };
-  }, [scannedBuildingIds]);
+  }, [scannedBuildingIds, selectedParcelId]);
 
   // Dynamic styling for Active Dataset parcels in Select Mode
   const getActiveDatasetStyle = useCallback((feature: any) => {
@@ -538,26 +554,45 @@ export const MapComponent = ({
             </LayerGroup>
           </LayersControl.Overlay>
 
-          {/* Overlay 4: เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่ - OpenStreetMap Cadastral/Building Polygons) */}
+          {/* Overlay 4: เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่ - Latest MinIO Dataset 1,600 Parcels) */}
           {interactionMode !== 'select' && (
             <LayersControl.Overlay checked name="เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่)">
               <GeoJSON
-                key={`parcels-${scannedBuildingIds.size}-${plotData?.latitude ?? 'none'}`}
-                data={hatYaiParcelsData as any}
+                key={`parcels-${activeDataset?.features?.length || 'local'}-${scannedBuildingIds.size}-${selectedParcelId ?? 'none'}`}
+                data={((activeDataset && activeDataset.features && activeDataset.features.length > 0) ? activeDataset : hatYaiParcelsData) as any}
                 style={getParcelStyle}
                 onEachFeature={(feature, layer) => {
                   if (feature.properties) {
                     const p = feature.properties;
-                    const fid = feature.id ?? p.id;
+                    const fid = feature.id ?? p.parcel_id ?? p.id;
                     const isScanned = fid !== undefined && (
                       scannedBuildingIds.has(fid) ||
                       scannedBuildingIds.has(String(fid)) ||
                       scannedBuildingIds.has(Number(fid))
                     );
+                    const areaSqm = Number(p.area_size || 0);
+                    const areaWah = areaSqm > 0 ? (areaSqm / 4.0) : 0;
+                    const priceWah = Number(p.price_ref || 0);
+                    const totalVal = Math.round(areaWah * priceWah);
+
+                    layer.on({
+                      click: () => {
+                        handleSelectParcel(feature);
+                      }
+                    });
+
                     layer.bindPopup(`
-                      <div style="font-family: system-ui, sans-serif; font-size: 12px; color: #f8fafc; min-width: 200px; line-height: 1.5;">
-                        <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin-bottom: 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.15); padding-bottom: 4px;">
-                          📌 ${p.name || 'แปลงที่ดิน / สิ่งปลูกสร้าง'}
+                      <div style="font-family: system-ui, sans-serif; font-size: 12px; color: #f8fafc; min-width: 230px; line-height: 1.5;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.15); padding-bottom: 4px;">
+                          <span style="font-size: 10px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); padding: 2px 6px; border-radius: 4px;">
+                            ${p.parcel_id || fid || 'PARCEL'}
+                          </span>
+                          <span style="font-size: 9px; font-weight: 600; color: #34d399; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); padding: 1px 5px; border-radius: 4px;">
+                            MinIO กรมธนารักษ์
+                          </span>
+                        </div>
+                        <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin-bottom: 5px;">
+                          📌 ${p.name || p.street || 'แปลงที่ดิน อ.หาดใหญ่'}
                         </div>
                         ${isScanned ? `
                         <div style="display: inline-block; font-size: 10px; font-weight: 700; color: #fca5a5; background: rgba(239, 68, 68, 0.25); border: 1px solid rgba(248, 113, 113, 0.6); padding: 2px 8px; border-radius: 6px; margin-bottom: 6px;">
@@ -565,13 +600,24 @@ export const MapComponent = ({
                         </div>
                         ` : ''}
                         <div style="color: #cbd5e1; margin-bottom: 3px;">
-                          ประเภท: <span style="color: #38bdf8; font-weight: 600;">${p.land_type || 'ทั่วไป'}</span>
+                          📍 ตำบล: <strong style="color: #f1f5f9;">ต.${p.subdistrict || 'หาดใหญ่'}</strong>, อ.${p.district || 'หาดใหญ่'}
                         </div>
                         <div style="color: #cbd5e1; margin-bottom: 3px;">
-                          พื้นที่: <span style="color: #f1f5f9;">${p.district}, จ.${p.province}</span>
+                          📐 พื้นที่: <strong style="color: #10b981;">${areaSqm.toLocaleString()} ตร.ม.</strong> <span style="font-size: 11px; color: #94a3b8;">(${areaWah.toLocaleString(undefined, {maximumFractionDigits: 1})} ตร.ว.)</span>
                         </div>
-                        <div style="font-size: 10px; color: #94a3b8; margin-top: 6px; border-top: 1px dashed rgba(255, 255, 255, 0.15); padding-top: 4px;">
-                          รหัส: ${p.id} &bull; ข้อมูลพิกัดจริง OSM
+                        ${priceWah > 0 ? `
+                        <div style="color: #cbd5e1; margin-bottom: 3px;">
+                          💰 ราคาประเมินรัฐ: <strong style="color: #fbbf24;">฿${priceWah.toLocaleString()} / ตร.ว.</strong>
+                        </div>
+                        <div style="color: #cbd5e1; margin-bottom: 3px;">
+                          🏷️ มูลค่าประเมินรวม: <strong style="color: #38bdf8;">฿${totalVal.toLocaleString()} บาท</strong>
+                        </div>
+                        ` : ''}
+                        <div style="color: #cbd5e1; margin-bottom: 4px;">
+                          🏛️ ประเภท: <span style="color: #93c5fd;">${p.land_type || 'ทั่วไป'}</span>
+                        </div>
+                        <div style="font-size: 10px; color: #34d399; margin-top: 6px; border-top: 1px dashed rgba(255, 255, 255, 0.15); padding-top: 4px; font-weight: 500;">
+                          🎯 คลิกแปลงนี้เพื่อเลือกและประเมินราคา AI ทันที
                         </div>
                       </div>
                     `);
