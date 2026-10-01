@@ -40,6 +40,10 @@ async def create_price_prediction(
             request.features["active_appraisal_file"] = f"s3://{active_dataset.bucket_name}/{active_dataset.file_name}"
             logger.info(f"Attached active appraisal dataset path: {request.features['active_appraisal_file']}")
 
+        request.features["latitude"] = request.latitude
+        request.features["longitude"] = request.longitude
+        request.features["land_use_zone"] = request.land_use_zone
+
         # 1. Create LandPlot record
         land_plot = LandPlot(
             plot_name=request.plot_name,

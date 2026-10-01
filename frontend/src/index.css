@@ -328,5 +328,59 @@ html, body, #root {
   }
 }
 
+/* ========================================================== */
+/* 🛰️ AI VISION RADAR (YOLOv8 best.pt) DETECTIONS             */
+/* ========================================================== */
+.vision-target-building {
+  filter: drop-shadow(0 0 12px #10b981) drop-shadow(0 0 24px rgba(16, 185, 129, 0.8));
+  animation: targetBuildingGlow 1.8s infinite alternate ease-in-out;
+  cursor: pointer;
+}
+
+@keyframes targetBuildingGlow {
+  0% {
+    stroke-width: 3px;
+    fill-opacity: 0.55;
+    filter: drop-shadow(0 0 8px #10b981) drop-shadow(0 0 16px rgba(16, 185, 129, 0.6));
+  }
+  100% {
+    stroke-width: 5px;
+    fill-opacity: 0.8;
+    filter: drop-shadow(0 0 16px #34d399) drop-shadow(0 0 32px rgba(52, 211, 153, 0.9));
+  }
+}
+
+.vision-surrounding-building {
+  filter: drop-shadow(0 0 4px #00f2fe);
+  transition: all 0.2s ease-in-out;
+}
+
+.vision-surrounding-building:hover {
+  filter: drop-shadow(0 0 8px #38bdf8) drop-shadow(0 0 16px rgba(56, 189, 248, 0.8));
+  stroke-width: 3px !important;
+  fill-opacity: 0.6 !important;
+}
+
+.vision-building-tooltip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(10px) !important;
+  border: 1px solid rgba(56, 189, 248, 0.5) !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6) !important;
+  color: #ffffff !important;
+}
+
+.vision-target-tooltip {
+  background: rgba(6, 78, 59, 0.95) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1.5px solid #34d399 !important;
+  border-radius: 10px !important;
+  padding: 8px 12px !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7), 0 0 15px rgba(52, 211, 153, 0.4) !important;
+  color: #ffffff !important;
+}
+
+
 
 

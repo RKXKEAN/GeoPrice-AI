@@ -14,18 +14,21 @@ import {
   Navigation,
   Radio,
   Pencil,
-  MousePointerClick,
-  Database
+  Sliders
 } from 'lucide-react';
 import * as turf from '@turf/turf';
 import hatYaiLandmarksData from './data/hatyai_landmarks.json';
 import { MapComponent } from './components/MapComponent';
 import type { DrawnPlotData } from './components/MapComponent';
 import { FeedbackWidget } from './components/FeedbackWidget';
+import { AdminLogin } from './components/AdminLogin';
+import { AdminDashboard } from './components/AdminDashboard';
+import type { AdminUser } from './services/adminApi';
 import { submitPricePrediction } from './services/api';
 import type {
   PredictionJobResponse, 
-  PredictionResult 
+  PredictionResult,
+  RadarVisionResponse
 } from './services/api';
 
 export interface NearbyPOI {
@@ -41,14 +44,46 @@ export interface NearbyPOI {
 }
 
 export function App() {
-  // Mode state: 'draw' | 'select'
-  const [interactionMode, setInteractionMode] = useState<'draw' | 'select'>('draw');
+  // Navigation Route state: 'map' | 'admin'
+  const [currentView, setCurrentView] = useState<'map' | 'admin'>(() => {
+    return typeof window !== 'undefined' && window.location.pathname.startsWith('/admin') ? 'admin' : 'map';
+  });
+
+  // Admin authentication state
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => {
+    try {
+      const raw = localStorage.getItem('geoprice_admin_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  // Listen to browser forward/backward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      if (window.location.pathname.startsWith('/admin')) {
+        setCurrentView('admin');
+      } else {
+        setCurrentView('map');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Mode state: 'draw' | 'select' (default to select/radar)
+  const [interactionMode, setInteractionMode] = useState<'draw' | 'select'>('select');
 
   // Plot state
   const [plotData, setPlotData] = useState<DrawnPlotData | null>(null);
   const [plotName, setPlotName] = useState('พื้นที่ตรวจสอบ GeoPrice');
   const [landUseZone, setLandUseZone] = useState('สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)');
   const [predictionYears, setPredictionYears] = useState(1);
+
+  // AI Vision Radar (best.pt) states
+  const [visionResult, setVisionResult] = useState<RadarVisionResponse | null>(null);
+  const [isVisionScanning, setIsVisionScanning] = useState(false);
 
   // AI Radar Scan (200m) & OSRM POI states (500m)
   const [scannedBuildings, setScannedBuildings] = useState<number | null>(null);
@@ -63,6 +98,7 @@ export function App() {
   const [jobResult, setJobResult] = useState<PredictionResult | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+
   const handlePlotDrawn = useCallback((data: DrawnPlotData) => {
     setPlotData(data);
     if (data.plotName) {
@@ -76,6 +112,8 @@ export function App() {
     setActiveJob(null);
     setJobResult(null);
     setScannedBuildings(null);
+    setVisionResult(null);
+    setIsVisionScanning(false);
     setNearbyPOIs([]);
     setNearestPOI(null);
     if (wsRef.current) {
@@ -87,6 +125,7 @@ export function App() {
       wsRef.current = null;
     }
   }, []);
+
 
   const handleRadarScanned = useCallback((count: number) => {
     setScannedBuildings(count);
@@ -143,20 +182,16 @@ export function App() {
         }).sort((a: any, b: any) => a.straightDistKm - b.straightDistKm);
 
         // ดึงตัวที่ระยะเส้นตรง <= 0.8 km เพื่อครอบคลุมระยะถนนจริงถึง 500m (และคงไว้อย่างน้อย 1 สถานที่ที่ใกล้ที่สุดเสมอ)
+        // ดึงตัวที่ระยะเส้นตรง <= 0.8 km เพื่อครอบคลุมระยะถนนจริงถึง 500m (และคงไว้อย่างน้อย 1 สถานที่ที่ใกล้ที่สุดเสมอ)
         const candidates = allLandmarks.filter((item: any, idx: number) => item.straightDistKm <= 0.8 || idx === 0);
 
-        const results: NearbyPOI[] = [];
-        let closest: NearbyPOI | null = null;
-        let minDrivingDist = Infinity;
-
-        // เรียกใช้ OSRM API สำหรับ candidates
-        for (const item of candidates) {
-          if (isCancelled) break;
-          let drivingDist = item.straightDistM * 1.35; // Fallback ประมาณการระยะทางถนน
+        // คำนวณระยะทางแบบขนาน (Parallel) พร้อม Fallback รวดเร็ว เพื่อป้องกัน UI ค้าง
+        const poiPromises = candidates.map(async (item: any) => {
+          let drivingDist = Math.round(item.straightDistM * 1.32); // Fallback แม่นยำสำหรับถนนเขตเมืองหาดใหญ่
 
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const timeoutId = setTimeout(() => controller.abort(), 1200); // Timeout สูงสุด 1.2 วินาที
             const res = await fetch(
               `https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${item.lon2},${item.lat2}?overview=false`,
               { signal: controller.signal }
@@ -165,34 +200,42 @@ export function App() {
             if (res.ok) {
               const data = await res.json();
               if (data?.routes?.[0]?.distance !== undefined) {
-                drivingDist = data.routes[0].distance;
+                drivingDist = Math.round(data.routes[0].distance);
               }
             }
-          } catch (err) {
-            console.warn('OSRM routing fetch failed, using fallback road distance:', err);
+          } catch {
+            // สลับใช้ระยะถนนจากการประมาณการ (1.32x) ทันทีหาก OSRM สาธารณะช้าหรือ rate-limit
           }
 
-          const roundedDrivingDist = Math.round(drivingDist);
-          const isWithin500m = roundedDrivingDist <= 500;
+          const isWithin500m = drivingDist <= 500;
           const poiObj: NearbyPOI = {
             id: item.feature.id || item.feature.properties?.name,
             name: item.feature.properties?.name,
             category: item.feature.properties?.category,
             category_th: item.feature.properties?.category_th,
-            distanceMeters: roundedDrivingDist,
+            distanceMeters: drivingDist,
             straightDistanceMeters: item.straightDistM,
             coordinates: [item.lon2, item.lat2],
             badge: item.feature.properties?.badge,
             isWithin500m,
           };
 
-          // บันทึกลง nearbyPOIs หากระยะทางขับรถจริง <= 500m
+          return poiObj;
+        });
+
+        const allResolved = await Promise.all(poiPromises);
+        if (isCancelled) return;
+
+        const results: NearbyPOI[] = [];
+        let closest: NearbyPOI | null = null;
+        let minDrivingDist = Infinity;
+
+        for (const poiObj of allResolved) {
           if (poiObj.isWithin500m) {
             results.push(poiObj);
           }
-
-          if (roundedDrivingDist < minDrivingDist) {
-            minDrivingDist = roundedDrivingDist;
+          if (poiObj.distanceMeters < minDrivingDist) {
+            minDrivingDist = poiObj.distanceMeters;
             closest = poiObj;
           }
         }
@@ -330,6 +373,35 @@ export function App() {
     };
   }, []);
 
+  // Render Admin View if currentView is 'admin'
+  if (currentView === 'admin') {
+    if (!adminUser) {
+      return (
+        <AdminLogin
+          onLoginSuccess={(u) => setAdminUser(u)}
+          onBackToMap={() => {
+            window.history.pushState({}, '', '/');
+            setCurrentView('map');
+          }}
+        />
+      );
+    }
+    return (
+      <AdminDashboard
+        user={adminUser}
+        onLogout={() => {
+          localStorage.removeItem('geoprice_admin_token');
+          localStorage.removeItem('geoprice_admin_user');
+          setAdminUser(null);
+        }}
+        onBackToMap={() => {
+          window.history.pushState({}, '', '/');
+          setCurrentView('map');
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
       {/* Left / Main Section: Interactive Map */}
@@ -348,6 +420,19 @@ export function App() {
             </h1>
             <p className="text-xs text-slate-400">ระบบประเมินราคาที่ดินและศักยภาพอัจฉริยะ</p>
           </div>
+
+          {/* Admin MLOps Console Shortcut Button */}
+          <button
+            onClick={() => {
+              window.history.pushState({}, '', '/admin');
+              setCurrentView('admin');
+            }}
+            className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold shadow-md transition-all cursor-pointer"
+            title="เปิดแผงควบคุมดูแลระบบ MLOps (Admin Console)"
+          >
+            <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+            <span>⚙️ Admin MLOps</span>
+          </button>
         </div>
 
         {/* Map Rendering with 200m Radar Scan & Visual Connection Line */}
@@ -358,6 +443,10 @@ export function App() {
           onRadarScanned={handleRadarScanned}
           nearestPOI={nearestPOI}
           interactionMode={interactionMode}
+          visionResult={visionResult}
+          onVisionResult={setVisionResult}
+          isVisionScanning={isVisionScanning}
+          setIsVisionScanning={setIsVisionScanning}
         />
       </div>
 
@@ -382,39 +471,39 @@ export function App() {
 
         {/* Sidebar Content */}
         <div className="p-5 space-y-5 flex-1">
-          {/* Mode Switcher Toggle: Draw Mode vs Select Mode */}
+          {/* Mode Switcher Toggle: AI Vision Radar vs Manual Draw */}
           <div className="bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 flex items-center gap-1.5 shadow-inner">
-            <button
-              type="button"
-              onClick={() => setInteractionMode('draw')}
-              className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
-                interactionMode === 'draw'
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 border border-blue-400/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <Pencil className="w-3.5 h-3.5" />
-              <span>โหมดวาดแปลง (Draw)</span>
-            </button>
             <button
               type="button"
               onClick={() => setInteractionMode('select')}
               className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
                 interactionMode === 'select'
                   ? 'bg-cyan-600 text-white shadow-md shadow-cyan-500/25 border border-cyan-400/30'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              }`}
+            >
+              <Radar className="w-3.5 h-3.5 animate-pulse" />
+              <span>AI Vision Radar (200m)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setInteractionMode('draw')}
+              className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
+                interactionMode === 'draw'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 border border-blue-400/30'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-850'
               }`}
             >
-              <MousePointerClick className="w-3.5 h-3.5" />
-              <span>โหมดเลือกแปลง (Select)</span>
+              <Pencil className="w-3.5 h-3.5" />
+              <span>โหมดวาดแปลง (Draw)</span>
             </button>
           </div>
 
-          {/* Plot Information Section */}
+          {/* Plot & Target Building Information Section */}
           <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <MapPin className="w-3.5 h-3.5 text-blue-400" /> ข้อมูลแปลงที่ดิน
+                <MapPin className="w-3.5 h-3.5 text-blue-400" /> ข้อมูลแปลงและสิ่งปลูกสร้าง
               </label>
               {plotData && (
                 <button
@@ -452,46 +541,109 @@ export function App() {
               </select>
             </div>
 
-            {/* Coordinates, Area and Nearest POI Display */}
-            {plotData ? (
-              <div className="space-y-2.5 pt-1">
-                {/* Active Dataset parcel metadata badge if selected */}
-                {plotData.parcelId && (
-                  <div className="bg-cyan-950/40 p-2.5 rounded-lg border border-cyan-800/50 flex items-center justify-between gap-2 shadow-sm">
-                    <div className="flex items-center gap-1.5 text-xs text-cyan-300 font-semibold">
-                      <Database className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                      <span>รหัสแปลง:</span>
-                      <span className="font-mono text-white bg-cyan-900/60 px-1.5 py-0.5 rounded border border-cyan-700/50">
-                        {plotData.parcelId}
-                      </span>
-                    </div>
-                    {plotData.priceRef && (
-                      <div className="text-[11px] text-amber-300 font-medium">
-                        ราคาอ้างอิง: <span className="font-bold">฿{plotData.priceRef.toLocaleString()}</span> / ตร.ม.
+            {/* AI Vision Radar Target Building Detail Card */}
+            {visionResult?.target_building ? (
+              <div className="space-y-3 pt-1">
+                {/* Confidence & Model Badge */}
+                <div className="bg-emerald-950/40 p-2.5 rounded-lg border border-emerald-800/50 flex items-center justify-between gap-2 shadow-sm">
+                  <div className="flex items-center gap-1.5 text-xs text-emerald-300 font-semibold">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>ตรวจพบโดย YOLOv8 (best.pt):</span>
+                  </div>
+                  <div className="text-[11px] text-emerald-200 font-mono bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
+                    ความมั่นใจ {Math.round(visionResult.target_building.confidence * 100)}%
+                  </div>
+                </div>
+
+                {/* Valuation Source Badge */}
+                {visionResult.target_building.valuation_source && (
+                  <div className={`p-2.5 rounded-lg text-xs font-medium flex items-center gap-2 border shadow-sm ${
+                    visionResult.target_building.source_badge === 'real_exact'
+                      ? 'bg-emerald-950/60 border-emerald-600/70 text-emerald-300'
+                      : visionResult.target_building.source_badge === 'ai_ml_model'
+                      ? 'bg-purple-950/60 border-purple-600/70 text-purple-300'
+                      : 'bg-indigo-950/60 border-indigo-600/70 text-indigo-300'
+                  }`}>
+                    <span className="shrink-0 text-sm">
+                      {visionResult.target_building.source_badge === 'real_exact' ? '🟢' : '🟣'}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="font-bold truncate">{visionResult.target_building.valuation_source}</div>
+                      <div className="text-[10px] opacity-80 mt-0.5">
+                        {visionResult.target_building.source_badge === 'real_exact'
+                          ? 'ดึงจากฐานข้อมูลจริงกรมธนารักษ์โดยตรง (ไม่ผ่านโมเดลคำนวณ)'
+                          : 'ทำนายราคาด้วยโมเดล ML (Ensemble Model) เนื่องจากไม่มีแปลงสำรวจจริง'}
                       </div>
-                    )}
+                    </div>
                   </div>
                 )}
 
+                {/* Road & Zone Name */}
+                <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 space-y-1">
+                  <div className="text-[10px] text-slate-400">ทำเล / โซนราคาประเมิน</div>
+                  <div className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    {visionResult.target_building.road_name}
+                  </div>
+                  <div className="text-xs text-slate-300">
+                    {visionResult.target_building.zone_name} (ต.{visionResult.target_building.subdistrict} อ.{visionResult.target_building.district})
+                  </div>
+                </div>
+
+                {/* Metrics 2x2 Grid */}
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">จุดศูนย์กลาง (Lat, Lng)</div>
-                    <div className="text-xs font-mono font-medium text-slate-200 mt-0.5 truncate">
-                      {plotData.latitude}, {plotData.longitude}
+                    <div className="text-[10px] text-slate-400">ขนาดพื้นที่สิ่งปลูกสร้าง</div>
+                    <div className="text-sm font-bold text-cyan-400 mt-0.5">
+                      {visionResult.target_building.area_sqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-medium">
+                      ({visionResult.target_building.area_wah} ตร.ว.)
                     </div>
                   </div>
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">มิติอาคาร (กว้าง x ยาว)</div>
+                    <div className="text-xs font-semibold text-slate-200 mt-1">
+                      {visionResult.target_building.width_m} × {visionResult.target_building.length_m} ม.
+                    </div>
+                    <div className="text-[10px] text-slate-500">ตรวจจับด้วย YOLOv8 Vision</div>
+                  </div>
+
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
                     <div className="text-[10px] text-slate-400">
-                      {plotData.source === 'select' ? 'ขนาดพื้นที่ (Active Dataset)' : 'ขนาดพื้นที่คำนวณ'}
+                      {visionResult.target_building.source_badge === 'real_exact' ? 'ราคาประเมินจริง (ต่อ ตร.ว.)' : 'ราคาประเมินโมเดล ML'}
                     </div>
-                    <div className="text-xs font-bold text-emerald-400 mt-0.5">
-                      {plotData.areaSqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
+                    <div className="text-xs font-bold text-amber-300 mt-0.5">
+                      ฿{visionResult.target_building.price_per_wah.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">/ ตร.ว.</span>
                     </div>
-                    <div className="text-[10px] text-slate-400 font-medium">
-                      ({formatThaiLandArea(plotData.areaSqm)})
+                    <div className="text-[10px] text-slate-500">
+                      (~฿{Math.round(visionResult.target_building.price_per_wah / 4).toLocaleString()} / ตร.ม.)
+                    </div>
+                  </div>
+                  <div className="bg-emerald-950/60 p-2.5 rounded-lg border border-emerald-700/60 shadow-inner">
+                    <div className="text-[10px] text-emerald-300 font-medium">มูลค่าประเมินรวม</div>
+                    <div className="text-sm font-extrabold text-emerald-400 mt-0.5">
+                      ฿{visionResult.target_building.total_estimated_price.toLocaleString()}
+                    </div>
+                    <div className="text-[9px] text-emerald-300/70">
+                      {visionResult.target_building.source_badge === 'real_exact'
+                        ? '🟢 ข้อมูลจริงกรมธนารักษ์'
+                        : '🟣 โมเดล AI ML Ensemble'}
                     </div>
                   </div>
                 </div>
+
+                {/* Real Cadastral Parcel Extra Info if available */}
+                {visionResult.target_building.parcel_total_value && (
+                  <div className="bg-emerald-950/30 p-2.5 rounded-lg border border-emerald-800/40 text-[11px] text-emerald-300 flex items-center justify-between">
+                    <div>
+                      <span className="font-semibold text-emerald-200">มูลค่าทั้งแปลงโฉนดจริง:</span> ฿{visionResult.target_building.parcel_total_value.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] text-emerald-400/80">
+                      (แปลงขนาด {visionResult.target_building.parcel_area_wah} ตร.ว.)
+                    </div>
+                  </div>
+                )}
 
                 {/* Nearest POI Fast Summary Badge */}
                 {nearestPOI && (
@@ -517,41 +669,102 @@ export function App() {
                   </div>
                 )}
               </div>
-            ) : interactionMode === 'select' ? (
+            ) : plotData ? (
+              /* If manually drawn */
+              <div className="space-y-2.5 pt-1">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">จุดศูนย์กลาง (Lat, Lng)</div>
+                    <div className="text-xs font-mono font-medium text-slate-200 mt-0.5 truncate">
+                      {plotData.latitude}, {plotData.longitude}
+                    </div>
+                  </div>
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">ขนาดพื้นที่คำนวณ</div>
+                    <div className="text-xs font-bold text-emerald-400 mt-0.5">
+                      {plotData.areaSqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-medium">
+                      ({formatThaiLandArea(plotData.areaSqm)})
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : isVisionScanning ? (
+              <div className="p-4 rounded-xl bg-cyan-950/40 border border-cyan-800/60 text-xs text-cyan-200 flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                <div>
+                  <div className="font-bold text-cyan-300">กำลังประมวลผล AI Vision Radar...</div>
+                  <div className="text-[11px] text-slate-400">ดาวน์โหลดภาพถ่ายดาวเทียมและรันโมเดล YOLOv8 best.pt</div>
+                </div>
+              </div>
+            ) : (
               <div className="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-800/50 text-xs text-cyan-200/90 flex items-start gap-2.5 shadow-sm">
                 <span className="text-base shrink-0 mt-0.5">🎯</span>
                 <span className="leading-relaxed">
-                  <strong>คลิกเลือกแปลงที่ดินบนแผนที่</strong> เพื่อดูข้อมูลและประเมินราคา (พิกัดและขนาดพื้นที่ถูกดึงจาก Active Dataset โดยตรง)
-                </span>
-              </div>
-            ) : (
-              <div className="p-3.5 rounded-lg bg-blue-950/30 border border-blue-800/50 text-xs text-blue-200/90 flex items-start gap-2.5 shadow-sm">
-                <span className="text-base shrink-0 mt-0.5">💡</span>
-                <span className="leading-relaxed">
-                  <strong>วิธีวาดแปลงที่ดิน:</strong> คลิกจุดตามมุมของที่ดินไปเรื่อยๆ (ไม่จำกัดจำนวนจุด) และ <strong>คลิกที่จุดเริ่มต้นอีกครั้ง</strong> เพื่อเสร็จสิ้นการวาด
+                  <strong>คลิกบนภาพถ่ายดาวเทียมเพื่อเริ่มสแกนเรดาร์:</strong> AI (YOLOv8 best.pt) จะตรวจจับสิ่งปลูกสร้างจุดที่เลือก คำนวณขนาดพื้นที่ ประเมินราคา และสแกนบ้านรอบข้างในรัศมี 200 เมตรทันที
                 </span>
               </div>
             )}
           </div>
 
-          {/* 4. AI Radar Scan 200m Section (คงไว้ที่ 200 เมตร ตามข้อกำหนด) */}
-          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-2.5">
+          {/* AI Radar Scan 200m Section (YOLOv8 best.pt detections) */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Radar className="w-4 h-4 text-cyan-400 animate-pulse" /> AI Radar (200m)
+                <Radar className="w-4 h-4 text-cyan-400 animate-pulse" /> ผลการสแกนเรดาร์รอบข้าง (200m)
               </label>
               <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold border transition-colors ${
-                scannedBuildings !== null
+                (visionResult || scannedBuildings !== null)
                   ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
                   : 'bg-slate-800/80 text-slate-500 border-slate-700/60'
               }`}>
-                {scannedBuildings !== null ? `พบสิ่งปลูกสร้าง ${scannedBuildings} หลัง` : 'รอวาดแปลงที่ดิน'}
+                {visionResult
+                  ? `ตรวจพบ ${visionResult.radar_summary.total_buildings_detected} หลัง`
+                  : scannedBuildings !== null
+                  ? `พบสิ่งปลูกสร้าง ${scannedBuildings} หลัง`
+                  : 'รอคลิกสแกนเรดาร์'}
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              สแกนและนับสิ่งปลูกสร้างในรัศมี 200m จากจุดกึ่งกลางแปลงที่ดินด้วย Turf.js Spatial Intersection พร้อมเน้นสีแดงเรืองแสงบนแผนที่
-            </p>
+
+            {visionResult ? (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-xs bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                  <span className="text-slate-400">ระดับความหนาแน่น:</span>
+                  <span className="font-semibold text-amber-300">
+                    {visionResult.radar_summary.density_level}
+                  </span>
+                </div>
+
+                {visionResult.surrounding_buildings.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-semibold text-slate-400 flex items-center justify-between">
+                      <span>สิ่งปลูกสร้างใกล้เคียง (ตัวอย่าง 4 หลังแรก):</span>
+                      <span className="text-[10px] text-cyan-400">สแกนครอบคลุม 200 ม.</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {visionResult.surrounding_buildings.slice(0, 4).map((bld, idx) => (
+                        <div key={idx} className="bg-slate-900/60 p-2 rounded-lg border border-slate-800 text-[11px]">
+                          <div className="text-cyan-400 font-bold flex items-center justify-between">
+                            <span>{bld.id}</span>
+                            <span className="text-[10px] text-slate-400">ห่าง {bld.distance_m} ม.</span>
+                          </div>
+                          <div className="text-slate-300 text-[10px] mt-0.5">
+                            ขนาด: <strong>{bld.area_sqm} ตร.ม.</strong> ({bld.area_wah} ตร.ว.)
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                สแกนภาพถ่ายดาวเทียมความละเอียดสูงด้วย YOLOv8 (best.pt) ในรัศมี 200 เมตร พร้อมวาดรูปแปลง Polygon สิ่งปลูกสร้างสีฟ้าเรืองแสงบนแผนที่
+              </p>
+            )}
           </div>
+
 
           {/* 3. Nearby POIs Section (OSRM API Driving Route <= 500m) */}
           <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
@@ -755,24 +968,72 @@ export function App() {
               {/* Completed Price Prediction Display */}
               {jobResult?.price_prediction && (
                 <div className="mt-3 pt-3 border-t border-slate-800/80 bg-blue-950/30 -mx-4 -mb-4 p-4 rounded-b-xl space-y-2.5">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-blue-400">
-                    <TrendingUp className="w-4 h-4" />
-                    ผลการประเมินราคาที่ดิน ({predictionYears} ปี)
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-blue-400">
+                      <TrendingUp className="w-4 h-4" />
+                      ผลการประเมินราคาที่ดิน ({predictionYears} ปีข้างหน้า - ปี {2026 + predictionYears})
+                    </div>
+                    {(jobResult.price_prediction.details_json?.total_growth_pct ?? 0) > 0 && (
+                      <span className="text-[10px] font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 px-2 py-0.5 rounded-full">
+                        +{jobResult.price_prediction.details_json?.total_growth_pct}%
+                      </span>
+                    )}
                   </div>
+
+                  {jobResult.price_prediction.details_json?.valuation_source && (
+                    <div className="text-[10px] text-slate-400 bg-slate-900/60 p-1.5 rounded border border-slate-800 flex items-center gap-1.5">
+                      <span>{jobResult.price_prediction.details_json.source_badge === 'real_exact' ? '🟢' : '🟣'}</span>
+                      <span className="truncate">{jobResult.price_prediction.details_json.valuation_source}</span>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                      <div className="text-[10px] text-slate-400">ราคาเฉลี่ย / ตร.ม.</div>
+                      <div className="text-[10px] text-slate-400">ราคาเฉลี่ย / ตร.ม. (ปี {2026 + predictionYears})</div>
                       <div className="text-sm font-bold text-white mt-0.5">
                         ฿{jobResult.price_prediction.predicted_price_per_sqm.toLocaleString()}
                       </div>
+                      {jobResult.price_prediction.details_json?.base_price_per_sqm_thb && (
+                        <div className="text-[9px] text-slate-500 mt-0.5">
+                          ปัจจุบัน ฿{jobResult.price_prediction.details_json.base_price_per_sqm_thb.toLocaleString()}
+                        </div>
+                      )}
                     </div>
                     <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                      <div className="text-[10px] text-slate-400">มูลค่ารวมทั้งแปลง</div>
+                      <div className="text-[10px] text-slate-400">มูลค่ารวมทั้งแปลง (ปี {2026 + predictionYears})</div>
                       <div className="text-sm font-bold text-emerald-400 mt-0.5">
                         ฿{jobResult.price_prediction.total_predicted_price.toLocaleString()}
                       </div>
+                      {(jobResult.price_prediction.details_json?.appreciation_gain_thb ?? 0) > 0 && (
+                        <div className="text-[9px] text-emerald-400/80 mt-0.5 font-medium">
+                          +฿{jobResult.price_prediction.details_json?.appreciation_gain_thb?.toLocaleString()}
+                        </div>
+                      )}
                     </div>
                   </div>
+
+                  {/* Multi-Year Timeline pills if available */}
+                  {jobResult.price_prediction.details_json?.forecast_timeline && (
+                    <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800/80 space-y-1.5">
+                      <div className="text-[10px] text-slate-400 font-medium">ไทม์ไลน์คาดการณ์การเติบโตรายปี:</div>
+                      <div className="grid grid-cols-4 gap-1 text-center">
+                        {jobResult.price_prediction.details_json.forecast_timeline.slice(0, 4).map((f: any) => (
+                          <div key={f.calendar_year} className={`p-1 rounded text-[9px] ${
+                            f.year_offset === predictionYears
+                              ? 'bg-blue-600/30 text-blue-200 border border-blue-500/50 font-bold'
+                              : 'bg-slate-800/40 text-slate-400'
+                          }`}>
+                            <div>{f.calendar_year}</div>
+                            <div className="font-mono mt-0.5">฿{Math.round(f.price_per_sqm / 1000)}k</div>
+                            {f.growth_pct > 0 && (
+                              <div className="text-emerald-400 text-[8px]">+{f.growth_pct}%</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
                     <span>ความเชื่อมั่นโมเดล:</span>
                     <span className="font-mono font-semibold text-blue-300">

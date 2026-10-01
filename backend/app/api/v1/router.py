@@ -2,10 +2,24 @@ from fastapi import APIRouter
 from app.api.v1.endpoints.predictions import router as predictions_router
 from app.api.v1.endpoints.webhook import router as webhook_router
 from app.api.v1.endpoints.auth import router as auth_router
-from app.api.v1.endpoints import models, storage, data, annotation, health, monitoring, appraisal_data, pois
+from app.api.v1.endpoints import models, storage, data, annotation, health, monitoring, appraisal_data, pois, vision, admin
 
 api_v1_router = APIRouter()
 api_router = api_v1_router
+
+# Admin Maintenance & MLOps Console endpoints
+api_router.include_router(
+    admin.router,
+    prefix="/admin",
+    tags=["Admin Console"]
+)
+
+# AI Vision Radar (YOLOv8 Satellite Detection)
+api_router.include_router(
+    vision.router,
+    prefix="/vision",
+    tags=["AI Vision Radar"]
+)
 
 # Points of Interest (Overpass API Proxy)
 api_router.include_router(

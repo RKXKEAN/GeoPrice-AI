@@ -10,17 +10,15 @@ import {
   Tooltip,
   Marker,
   Popup,
-  useMap 
+  useMap,
+  useMapEvents
 } from 'react-leaflet';
 import L from 'leaflet';
 import type { Feature, Polygon } from 'geojson';
 import * as turf from '@turf/turf';
 import { EditControl } from './EditControl';
-import hatYaiParcelsData from '../data/hatyai_parcels.json';
-// import hatYaiLandmarksData from '../data/hatyai_landmarks.json'; // Replaced by dynamic Overpass API
 import { fetchPOIsAround, type OverpassPOI } from '../services/overpass';
-import { fetchActiveGeoJSON } from '../services/api';
-import { CanvasParcelsLayer } from './CanvasParcelsLayer';
+import { scanVisionRadar, type RadarVisionResponse } from '../services/api';
 
 export interface DrawnPlotData {
   geometry: any;
@@ -30,7 +28,7 @@ export interface DrawnPlotData {
   parcelId?: string | number;
   priceRef?: number;
   plotName?: string;
-  source?: 'draw' | 'select';
+  source?: 'draw' | 'select' | 'radar';
 }
 
 interface MapComponentProps {
@@ -40,6 +38,10 @@ interface MapComponentProps {
   onRadarScanned?: (count: number) => void;
   nearestPOI?: any;
   interactionMode?: 'draw' | 'select';
+  visionResult?: RadarVisionResponse | null;
+  onVisionResult?: (result: RadarVisionResponse | null) => void;
+  isVisionScanning?: boolean;
+  setIsVisionScanning?: (scanning: boolean) => void;
 }
 
 // Fix default Leaflet icon paths
@@ -124,6 +126,24 @@ const createPOIIcon = (emoji: string, color: string) => {
   });
 };
 
+// Custom glowing pin icon for target building detected by YOLOv8
+const createTargetPinIcon = () => {
+  return L.divIcon({
+    className: 'custom-target-marker',
+    html: `
+      <div style="position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+        <div style="position: absolute; width: 44px; height: 44px; border-radius: 50%; background: rgba(16, 185, 129, 0.4); animation: landmarkPulse 1.8s infinite;"></div>
+        <div style="width: 32px; height: 32px; border-radius: 50%; background: #059669; border: 2.5px solid #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 16px rgba(16, 185, 129, 0.9);">
+          <span style="font-size: 16px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));">🎯</span>
+        </div>
+      </div>
+    `,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+    popupAnchor: [0, -18],
+  });
+};
+
 // Component to handle map size invalidation on render
 const MapResizer = () => {
   const map = useMap();
@@ -136,6 +156,34 @@ const MapResizer = () => {
   return null;
 };
 
+// Component to fly map smoothly to target center at high zoom
+const MapFlyTo = ({ center }: { center: [number, number] | null }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (center) {
+      map.flyTo(center, 18, { duration: 0.8, easeLinearity: 0.25 });
+    }
+  }, [center, map]);
+  return null;
+};
+
+// Component to capture click events in select/radar mode
+const MapClickHandler = ({ 
+  enabled, 
+  onMapClick 
+}: { 
+  enabled: boolean; 
+  onMapClick: (lat: number, lng: number) => void;
+}) => {
+  useMapEvents({
+    click(e) {
+      if (enabled) {
+        onMapClick(e.latlng.lat, e.latlng.lng);
+      }
+    },
+  });
+  return null;
+};
 
 export const MapComponent = ({ 
   onPlotDrawn, 
@@ -143,36 +191,17 @@ export const MapComponent = ({
   plotData, 
   onRadarScanned, 
   nearestPOI,
-  interactionMode = 'draw'
+  interactionMode = 'select',
+  visionResult,
+  onVisionResult,
+  isVisionScanning = false,
+  setIsVisionScanning
 }: MapComponentProps) => {
   const featureGroupRef = useRef<L.FeatureGroup | null>(null);
   const [radarCircle, setRadarCircle] = useState<any>(null);
-  const [scannedBuildingIds, setScannedBuildingIds] = useState<Set<string | number>>(new Set());
   const [dynamicPOIs, setDynamicPOIs] = useState<OverpassPOI[]>([]);
   const [isFetchingPOIs, setIsFetchingPOIs] = useState<boolean>(false);
-  const [activeDataset, setActiveDataset] = useState<any>(null);
-  const [isLoadingDataset, setIsLoadingDataset] = useState<boolean>(false);
-  const [selectedParcelId, setSelectedParcelId] = useState<string | number | null>(null);
-
-  // Active dataset fallback: MinIO active dataset (21,718 parcels) or local dataset
-  const allParcelsData = useMemo(() => {
-    return (activeDataset?.features && activeDataset.features.length > 0)
-      ? activeDataset
-      : (hatYaiParcelsData as any);
-  }, [activeDataset]);
-
-  const totalParcelsCount = allParcelsData?.features?.length || 0;
-
-  // Selected parcel feature for glowing pulse overlay
-  const selectedParcelFeature = useMemo(() => {
-    if (selectedParcelId === null) return null;
-    const features = allParcelsData?.features;
-    if (!features) return null;
-    return features.find((f: any) => {
-      const pid = f.properties?.parcel_id || f.id;
-      return pid === selectedParcelId || String(pid) === String(selectedParcelId);
-    }) || null;
-  }, [allParcelsData, selectedParcelId]);
+  const [flyTarget, setFlyTarget] = useState<[number, number] | null>(null);
 
   // Initial load of POIs around Hat Yai center so the map is never empty
   useEffect(() => {
@@ -187,163 +216,105 @@ export const MapComponent = ({
       });
   }, []);
 
-  // Initial load of latest active appraisal dataset GeoJSON from MinIO (1,600 parcels across 13 subdistricts)
+  // When plotData is cleared, reset visual states
   useEffect(() => {
-    let isMounted = true;
-    setIsLoadingDataset(true);
-    fetchActiveGeoJSON()
-      .then((data) => {
-        if (isMounted && data && data.features) {
-          setActiveDataset(data);
-        }
-      })
-      .catch((err) => {
-        console.warn('Failed to load active MinIO appraisal dataset, using local fallback:', err);
-      })
-      .finally(() => {
-        if (isMounted) {
-          setIsLoadingDataset(false);
-        }
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  // Sync external parcel ID and clearing
-  useEffect(() => {
-    if (plotData?.parcelId !== undefined) {
-      setSelectedParcelId(plotData.parcelId);
-    } else if (!plotData) {
-      setSelectedParcelId(null);
+    if (!plotData) {
+      setRadarCircle(null);
+      setFlyTarget(null);
+      onVisionResult?.(null);
       if (featureGroupRef.current) {
         featureGroupRef.current.clearLayers();
       }
     }
-  }, [plotData]);
+  }, [plotData, onVisionResult]);
 
-  // Perform AI Radar 200m spatial analysis and Overpass POIs (1000m) when plotData changes
-  useEffect(() => {
-    if (!plotData || !plotData.geometry) {
-      setRadarCircle(null);
-      setScannedBuildingIds(new Set());
-      onRadarScanned?.(0);
-      // Reset back to Hat Yai city center POIs
-      fetchPOIsAround(HAT_YAI_COORDINATES[0], HAT_YAI_COORDINATES[1], 2000)
-        .then((pois) => {
-          if (pois && pois.length > 0) setDynamicPOIs(pois);
-        })
-        .catch(() => {});
-      return;
-    }
+  // Memoized GeoJSON for target building (detected by YOLOv8)
+  const targetGeoJSON = useMemo(() => {
+    if (!visionResult?.target_building?.coordinates) return null;
+    return {
+      type: 'Feature' as const,
+      properties: visionResult.target_building,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [visionResult.target_building.coordinates],
+      },
+    };
+  }, [visionResult]);
 
-    try {
-      const centroid = turf.centroid(plotData.geometry);
-      const [lng, lat] = centroid.geometry.coordinates;
+  // Memoized GeoJSON for surrounding buildings (within 200m)
+  const surroundingGeoJSON = useMemo(() => {
+    if (!visionResult?.surrounding_buildings?.length) return null;
+    return {
+      type: 'FeatureCollection' as const,
+      features: visionResult.surrounding_buildings.map((bld) => ({
+        type: 'Feature' as const,
+        id: bld.id,
+        properties: bld,
+        geometry: {
+          type: 'Polygon' as const,
+          coordinates: [bld.coordinates],
+        },
+      })),
+    };
+  }, [visionResult]);
 
-      // 1. Fetch dynamic POIs within 1000m radius around centroid using Overpass API
-      setIsFetchingPOIs(true);
-      fetchPOIsAround(lat, lng, 1000)
-        .then((pois) => {
-          if (pois && pois.length > 0) {
-            setDynamicPOIs(pois);
-          }
-        })
-        .catch((err) => {
-          console.error('Error fetching POIs from Overpass:', err);
-        })
-        .finally(() => {
-          setIsFetchingPOIs(false);
-        });
+  // Handle click on Map in Select / AI Radar Mode
+  const handleMapClick = useCallback(async (lat: number, lng: number) => {
+    if (interactionMode !== 'select') return;
 
-      // 2. Create 200-meter radius circle (0.2 kilometers)
-      const circle = turf.circle(centroid, 0.2, { units: 'kilometers' });
-      setRadarCircle(circle);
+    setIsVisionScanning?.(true);
 
-      // Check which parcels/buildings intersect with or are inside the 200m circle (using MinIO latest dataset)
-      const hitIds = new Set<string | number>();
-      const featuresToCheck = (activeDataset?.features && activeDataset.features.length > 0) 
-        ? activeDataset.features 
-        : (hatYaiParcelsData as any).features;
+    // Create immediate 200m circle around clicked point
+    const circle = turf.circle([lng, lat], 0.2, { units: 'kilometers' });
+    setRadarCircle(circle);
+    setFlyTarget([lat, lng]);
 
-      // Fast Bounding-Box prefilter: 200m in Hat Yai lat/lon is ~0.0028 degrees
-      const maxDelta = 0.0032;
-      for (const feature of featuresToCheck) {
-        const p = feature.properties || {};
-        let pLat = p.latitude;
-        let pLng = p.longitude;
-        if (pLat === undefined || pLng === undefined) {
-          const coords = feature.geometry?.coordinates?.[0]?.[0];
-          if (coords) {
-            pLng = coords[0];
-            pLat = coords[1];
-          }
-        }
-        if (pLat !== undefined && pLng !== undefined) {
-          if (Math.abs(pLat - lat) > maxDelta || Math.abs(pLng - lng) > maxDelta) {
-            continue; // Fast skip distant parcels in 0.0001ms
-          }
-        }
-        // Instant geodesic distance calculation (~0.002ms, zero CPU stall)
-        const dy = (pLat - lat) * 110574;
-        const dx = (pLng - lng) * 110488;
-        if (dx * dx + dy * dy <= 215 * 215) {
-          const id = feature.id ?? p.parcel_id ?? p.id;
-          if (id !== undefined) hitIds.add(id);
-        }
-      }
-
-      setScannedBuildingIds(hitIds);
-      onRadarScanned?.(hitIds.size);
-    } catch (err) {
-      console.error('Error during AI Radar scan analysis:', err);
-    }
-  }, [plotData, onRadarScanned, interactionMode, activeDataset]);
-
-
-  // Handle parcel selection in Select Mode
-  const handleSelectParcel = useCallback((feature: any) => {
-    const props = feature.properties || {};
-    const pid = props.parcel_id || feature.id;
-    setSelectedParcelId(pid);
-
-    let lat = props.latitude;
-    let lng = props.longitude;
-    if (lat === undefined || lng === undefined) {
-      const coords = feature.geometry?.coordinates;
-      const ring = coords?.[0] || [];
-      if (ring.length > 0) {
-        const avgLon = ring.reduce((sum: number, pt: number[]) => sum + pt[0], 0) / ring.length;
-        const avgLat = ring.reduce((sum: number, pt: number[]) => sum + pt[1], 0) / ring.length;
-        lat = parseFloat(avgLat.toFixed(6));
-        lng = parseFloat(avgLon.toFixed(6));
-      } else {
-        lat = 7.0084;
-        lng = 100.4767;
-      }
-    }
-
-    // Direct area size from dataset properties (no Turf.js recalculation)
-    const areaSqm = typeof props.area_size === 'number' ? props.area_size : 400.0;
-
-    // Clear any drawn shape from manual draw
+    // Clear any manual drawn polygon
     if (featureGroupRef.current) {
       featureGroupRef.current.clearLayers();
     }
 
-    onPlotDrawn({
-      geometry: feature.geometry,
-      latitude: lat,
-      longitude: lng,
-      areaSqm: areaSqm,
-      parcelId: pid,
-      priceRef: props.price_ref,
-      plotName: props.name || `แปลงที่ดิน ${pid}`,
-      source: 'select',
-    });
-  }, [onPlotDrawn]);
+    try {
+      // Execute 200m YOLOv8 AI Vision inference
+      const res = await scanVisionRadar(lat, lng, 200.0, 0.25);
+      onVisionResult?.(res);
+      onRadarScanned?.(res.radar_summary.total_buildings_detected);
 
-  // Handle newly created polygon or rectangle
+      if (res.target_building) {
+        const tb = res.target_building;
+        onPlotDrawn({
+          geometry: {
+            type: 'Polygon',
+            coordinates: [tb.coordinates],
+          },
+          latitude: tb.center[0],
+          longitude: tb.center[1],
+          areaSqm: tb.area_sqm,
+          priceRef: tb.price_per_wah,
+          plotName: tb.found
+            ? `อาคารเป้าหมาย (${tb.road_name})`
+            : `จุดตรวจสอบ (${tb.road_name})`,
+          source: 'select',
+        });
+      }
+
+      // Dynamic POIs within 1000m
+      setIsFetchingPOIs(true);
+      fetchPOIsAround(lat, lng, 1000)
+        .then((pois) => {
+          if (pois && pois.length > 0) setDynamicPOIs(pois);
+        })
+        .finally(() => setIsFetchingPOIs(false));
+
+    } catch (err: any) {
+      console.error('AI Vision Radar error:', err);
+      alert('เกิดข้อผิดพลาดในการรันโมเดล Vision: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setIsVisionScanning?.(false);
+    }
+  }, [interactionMode, setIsVisionScanning, onVisionResult, onRadarScanned, onPlotDrawn]);
+
+  // Handle newly created polygon or rectangle in manual Draw mode
   const handleCreated = useCallback((event: any) => {
     const layer = event.layer;
     if (featureGroupRef.current) {
@@ -356,13 +327,28 @@ export const MapComponent = ({
     const centroid = turf.centroid(geoJson);
     const [lng, lat] = centroid.geometry.coordinates;
 
+    const circle = turf.circle(centroid, 0.2, { units: 'kilometers' });
+    setRadarCircle(circle);
+
     onPlotDrawn({
       geometry: geoJson.geometry,
       latitude: parseFloat(lat.toFixed(6)),
       longitude: parseFloat(lng.toFixed(6)),
       areaSqm: Math.round(area * 100) / 100,
+      source: 'draw',
     });
-  }, [onPlotDrawn]);
+
+    // Optionally scan vision around drawn plot centroid
+    setIsVisionScanning?.(true);
+    scanVisionRadar(lat, lng, 200.0, 0.25)
+      .then((res) => {
+        onVisionResult?.(res);
+        onRadarScanned?.(res.radar_summary.total_buildings_detected);
+      })
+      .catch((err) => console.warn('Radar scan around drawn shape:', err))
+      .finally(() => setIsVisionScanning?.(false));
+
+  }, [onPlotDrawn, onVisionResult, onRadarScanned, setIsVisionScanning]);
 
   // Handle edited shapes
   const handleEdited = useCallback((event: any) => {
@@ -378,6 +364,7 @@ export const MapComponent = ({
         latitude: parseFloat(lat.toFixed(6)),
         longitude: parseFloat(lng.toFixed(6)),
         areaSqm: Math.round(area * 100) / 100,
+        source: 'draw',
       });
     });
   }, [onPlotDrawn]);
@@ -389,15 +376,20 @@ export const MapComponent = ({
 
   return (
     <div className="relative w-full h-full">
-      {/* UI Hint Banner: Dynamic based on interactionMode */}
+      {/* UI Hint Banner: Dynamic based on interactionMode and scanning state */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 backdrop-blur-md text-slate-200 px-4 py-2.5 rounded-xl text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center gap-2 max-w-xl text-center pointer-events-auto shadow-cyan-500/10">
         <span className="text-base shrink-0 animate-pulse">
-          {interactionMode === 'select' ? '🎯' : '💡'}
+          {isVisionScanning ? '🛰️' : (interactionMode === 'select' ? '🎯' : '💡')}
         </span>
         <span>
-          {interactionMode === 'select' ? (
+          {isVisionScanning ? (
+            <span className="text-cyan-300 font-semibold flex items-center gap-2">
+              <span className="w-2.5 h-2.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+              กำลังวิเคราะห์ภาพถ่ายดาวเทียมและตรวจจับอาคารด้วย AI (YOLOv8 best.pt)...
+            </span>
+          ) : interactionMode === 'select' ? (
             <>
-              <strong>โหมดเลือกแปลงที่ดิน (Select Mode):</strong> คลิกเลือกแปลงที่ดินบนแผนที่เพื่อดูข้อมูลและประเมินราคา (ดึงพิกัดและขนาดพื้นที่จาก Active Dataset เข้าสู่โมเดลโดยตรง)
+              <strong>โหมด AI Vision Radar (200m):</strong> คลิกที่อาคารหรือจุดใดก็ได้บนแผนที่ดาวเทียม เพื่อให้ AI ตรวจจับบ้าน ประเมินราคา และนับบ้านรอบข้าง 200 ม.
             </>
           ) : (
             <>
@@ -407,44 +399,30 @@ export const MapComponent = ({
         </span>
       </div>
 
-      {/* Loading badge for Active Dataset */}
-      {isLoadingDataset && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 backdrop-blur-md text-cyan-300 px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-          <span>กำลังโหลดแปลงที่ดิน Active Dataset จาก MinIO...</span>
-        </div>
-      )}
-
-      {/* Total Parcels Status Badge */}
-      {!isLoadingDataset && totalParcelsCount > 0 && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 backdrop-blur-md text-cyan-300 px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center gap-2 shadow-cyan-500/10">
-          <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <span>⚡ แสดงแปลงที่ดินพร้อมกันทุกระดับซูม {totalParcelsCount.toLocaleString()} แปลง (Hardware Canvas 60 FPS ลื่นไหลไม่ค้าง)</span>
-        </div>
-      )}
-
       <MapContainer
         center={HAT_YAI_COORDINATES}
-        zoom={14}
+        zoom={15}
         preferCanvas={true}
         zoomControl={true}
         className="w-full h-full"
       >
         <MapResizer />
+        <MapFlyTo center={flyTarget} />
+        <MapClickHandler enabled={interactionMode === 'select'} onMapClick={handleMapClick} />
 
         {/* Layer Controls: Base layers and Overlays */}
         <LayersControl position="topright">
-          {/* Base Layer 1: แผนที่ถนนมาตรฐาน (OpenStreetMap) */}
-          <LayersControl.BaseLayer checked name="แผนที่ถนน (OpenStreetMap)">
+          {/* Base Layer 1: ภาพถ่ายดาวเทียมดิบ (Google Raw Satellite) - 100% สะอาด ไร้ไอคอนและป้ายชื่อ */}
+          <LayersControl.BaseLayer checked name="ภาพถ่ายดาวเทียมดิบ (Google Raw Satellite - ไร้ไอคอน)">
             <TileLayer
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              maxZoom={19}
+              url="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}"
+              attribution="&copy; Google Maps Satellite Raw"
+              maxZoom={20}
             />
           </LayersControl.BaseLayer>
 
-          {/* Base Layer 2: ภาพถ่ายดาวเทียม (Google Satellite) */}
-          <LayersControl.BaseLayer name="ภาพถ่ายดาวเทียม">
+          {/* Base Layer 2: ภาพถ่ายดาวเทียมแบบมีชื่อสถานที่ (Google Hybrid) */}
+          <LayersControl.BaseLayer name="ภาพถ่ายดาวเทียมแบบมีป้ายชื่อ (Google Hybrid)">
             <TileLayer
               url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
               attribution="&copy; Google Maps Satellite Hybrid"
@@ -452,10 +430,18 @@ export const MapComponent = ({
             />
           </LayersControl.BaseLayer>
 
+          {/* Base Layer 3: แผนที่ถนนมาตรฐาน (OpenStreetMap) */}
+          <LayersControl.BaseLayer name="แผนที่ถนน (OpenStreetMap)">
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              maxZoom={19}
+            />
+          </LayersControl.BaseLayer>
+
           {/* Overlay 1: ขอบเขตอำเภอหาดใหญ่ (Glowing Neon Boundary Line) */}
           <LayersControl.Overlay checked name="ขอบเขตอำเภอหาดใหญ่ (เส้นเรืองแสง Neon)">
             <LayerGroup>
-              {/* Outer Glow Halo */}
               <GeoJSON
                 data={HAT_YAI_BOUNDARY_GEOJSON}
                 style={{
@@ -465,7 +451,6 @@ export const MapComponent = ({
                   className: 'hatyai-boundary-glow',
                 }}
               />
-              {/* Inner High-Contrast Core Line */}
               <GeoJSON
                 data={HAT_YAI_BOUNDARY_GEOJSON}
                 style={{
@@ -479,8 +464,9 @@ export const MapComponent = ({
             </LayerGroup>
           </LayersControl.Overlay>
 
-          {/* Overlay 2: สถานที่สำคัญรอบแปลงที่ดิน (Dynamic POIs via Overpass API 1000m) */}
-          <LayersControl.Overlay checked name="สถานที่สำคัญรอบแปลง (POIs & Landmarks)">
+          {/* Overlay 2: สถานที่สำคัญรอบแปลงที่ดิน (POIs & Landmarks) - ปิดไว้เริ่มต้นเพื่อภาพที่สะอาดตา ไร้ไอคอน */}
+          <LayersControl.Overlay name="สถานที่สำคัญรอบแปลง (POIs & Landmarks)">
+
             <LayerGroup>
               {dynamicPOIs.map((poi) => {
                 const meta = getPOIMeta(poi);
@@ -519,51 +505,122 @@ export const MapComponent = ({
               })}
             </LayerGroup>
           </LayersControl.Overlay>
-
-          {/* Overlay 4: เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่ 21,718 แปลง - Hardware Canvas 60 FPS) */}
-          {interactionMode !== 'select' && (
-            <LayersControl.Overlay checked name="เส้นรูปแปลงที่ดินจริง (อ.หาดใหญ่ 21,718 แปลง)">
-              <LayerGroup>
-                <CanvasParcelsLayer
-                  data={allParcelsData}
-                  selectedParcelId={selectedParcelId}
-                  scannedBuildingIds={scannedBuildingIds}
-                  onSelectParcel={handleSelectParcel}
-                  interactionMode={interactionMode}
-                />
-              </LayerGroup>
-            </LayersControl.Overlay>
-          )}
-
         </LayersControl>
 
-        {/* Active Dataset Canvas Layer (Select Mode - Always visible & interactive) */}
-        {interactionMode === 'select' && (
-          <CanvasParcelsLayer
-            data={allParcelsData}
-            selectedParcelId={selectedParcelId}
-            scannedBuildingIds={scannedBuildingIds}
-            onSelectParcel={handleSelectParcel}
-            interactionMode="select"
+        {/* 1. Surrounding Buildings Real Polygons (YOLOv8 best.pt 200m Radar) */}
+        {surroundingGeoJSON && (
+          <GeoJSON
+            key={`surrounding-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}`}
+            data={surroundingGeoJSON as any}
+            style={{
+              color: '#00f2fe',
+              weight: 1.5,
+              fillColor: '#0284c7',
+              fillOpacity: 0.25,
+              className: 'vision-surrounding-building',
+            }}
+            onEachFeature={(feature: any, layer: any) => {
+              const p = feature.properties || {};
+              layer.bindTooltip(`
+                <div style="font-family: system-ui, sans-serif; font-size: 11px; line-height: 1.4;">
+                  <div style="font-weight: 700; color: #38bdf8;">${p.id || 'สิ่งปลูกสร้าง'}</div>
+                  <div>ขนาด: <strong>${p.area_sqm} ตร.ม.</strong> (${p.area_wah} ตร.ว.)</div>
+                  <div>ห่าง: <strong>${p.distance_m} ม.</strong> | AI Conf: ${Math.round((p.confidence || 0) * 100)}%</div>
+                </div>
+              `, { sticky: true, className: 'vision-building-tooltip' });
+            }}
           />
         )}
 
-        {/* Selected Parcel Glowing Pulse Overlay (SVG with CSS neon animation) */}
-        {selectedParcelFeature && (
+        {/* 2. Target Building Footprint (Emerald Neon Glow) */}
+        {targetGeoJSON && (
           <GeoJSON
-            key={`selected-parcel-overlay-${selectedParcelId}`}
-            data={selectedParcelFeature}
+            key={`target-bld-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}`}
+            data={targetGeoJSON as any}
             style={{
               color: '#10b981',
               weight: 3.5,
               fillColor: '#059669',
               fillOpacity: 0.65,
-              className: 'selected-parcel-glow',
+              className: 'vision-target-building',
             }}
           />
         )}
 
-        {/* AI Radar Scan Circle (200m Radius) */}
+        {/* 3. Floating Target Pin & Detail Popup */}
+        {visionResult?.target_building && (
+          <Marker
+            position={visionResult.target_building.center}
+            icon={createTargetPinIcon()}
+          >
+            <Popup autoPan={false}>
+              <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#f8fafc', minWidth: '240px', lineHeight: 1.5 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', borderBottom: '1px solid rgba(255, 255, 255, 0.15)', paddingBottom: '6px' }}>
+                  <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', padding: '2px 8px', borderRadius: '9999px', background: '#10b98135', color: '#10b981', border: '1px solid #10b98180' }}>
+                    🎯 สิ่งปลูกสร้างเป้าหมาย
+                  </span>
+                  <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>
+                    AI {Math.round(visionResult.target_building.confidence * 100)}%
+                  </span>
+                </div>
+                <div style={{ fontWeight: 700, fontSize: '14px', color: '#ffffff', marginBottom: '2px' }}>
+                  {visionResult.target_building.road_name}
+                </div>
+                <div style={{ color: '#cbd5e1', fontSize: '11px', marginBottom: '6px' }}>
+                  {visionResult.target_building.zone_name}
+                </div>
+                {visionResult.target_building.valuation_source && (
+                  <div style={{
+                    fontSize: '10px',
+                    color: visionResult.target_building.source_badge === 'real_exact' ? '#34d399' : '#c084fc',
+                    background: visionResult.target_building.source_badge === 'real_exact' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(168, 85, 247, 0.15)',
+                    border: `1px solid ${visionResult.target_building.source_badge === 'real_exact' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(168, 85, 247, 0.4)'}`,
+                    padding: '3px 6px',
+                    borderRadius: '4px',
+                    marginBottom: '6px',
+                    fontWeight: 600,
+                  }}>
+                    {visionResult.target_building.source_badge === 'real_exact' ? '🟢 ' : '🟣 '}
+                    {visionResult.target_building.valuation_source}
+                  </div>
+                )}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', background: 'rgba(0,0,0,0.3)', padding: '6px 8px', borderRadius: '6px', margin: '6px 0' }}>
+                  <div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>ขนาดสิ่งปลูกสร้าง</div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#38bdf8' }}>
+                      {visionResult.target_building.area_sqm} ตร.ม.
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#64748b' }}>
+                      ({visionResult.target_building.area_wah} ตร.ว.)
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                      {visionResult.target_building.source_badge === 'real_exact' ? 'ราคาประเมินจริง' : 'ราคาประเมินโมเดล'}
+                    </div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#f59e0b' }}>
+                      ฿{visionResult.target_building.price_per_wah.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#64748b' }}>/ ตร.ว.</div>
+                  </div>
+                </div>
+                <div style={{ borderTop: '1px dashed rgba(255, 255, 255, 0.15)', paddingTop: '6px', marginTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>มูลค่าประเมินรวม:</span>
+                  <span style={{ fontSize: '15px', fontWeight: 800, color: '#10b981' }}>
+                    ฿{visionResult.target_building.total_estimated_price.toLocaleString()}
+                  </span>
+                </div>
+                {visionResult.target_building.parcel_total_value && (
+                  <div style={{ fontSize: '10px', color: '#34d399', marginTop: '4px', textAlign: 'right' }}>
+                    มูลค่าทั้งแปลงโฉนดจริง: ฿{visionResult.target_building.parcel_total_value.toLocaleString()}
+                  </div>
+                )}
+              </div>
+            </Popup>
+          </Marker>
+        )}
+
+        {/* 4. AI Radar Scan Circle (200m Radius) */}
         {radarCircle && (
           <GeoJSON
             key={`radar-${plotData?.latitude}-${plotData?.longitude}`}
@@ -579,7 +636,7 @@ export const MapComponent = ({
           />
         )}
 
-        {/* Visual Road Distance Line to Nearest POI */}
+        {/* 5. Visual Road Distance Line to Nearest POI */}
         {plotData && nearestPOI && nearestPOI.coordinates && (
           <Polyline
             key={`poi-line-${nearestPOI.id}-${plotData.latitude}-${plotData.longitude}`}
@@ -603,9 +660,9 @@ export const MapComponent = ({
           </Polyline>
         )}
 
-        {/* FeatureGroup for user-drawn land plots with Glowing Neon Styles */}
+        {/* FeatureGroup for manual land plot drawing */}
         <FeatureGroup ref={featureGroupRef}>
-          {interactionMode !== 'select' && (
+          {interactionMode === 'draw' && (
             <EditControl
               position="topright"
               onCreated={handleCreated}
@@ -646,14 +703,14 @@ export const MapComponent = ({
       {/* Map watermark / location tag */}
       <div className="absolute bottom-6 left-6 z-[1000] bg-slate-900/80 backdrop-blur text-white px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-md border border-cyan-500/30 flex items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-sm shadow-cyan-400"></span>
-        พิกัดศูนย์กลาง: อ.หาดใหญ่ จ.สงขลา (7.0084° N, 100.4767° E)
+        <span>ระบบเรดาร์ AI: อ.หาดใหญ่ จ.สงขลา (รัศมี 200 ม. โมเดล best.pt)</span>
       </div>
 
       {/* Loading badge for Overpass POIs */}
       {isFetchingPOIs && (
         <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 backdrop-blur-md text-cyan-300 px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-          <span>กำลังค้นหาสถานที่สำคัญจาก Overpass API (รัศมี 500 ม.)...</span>
+          <span>กำลังค้นหาสถานที่สำคัญจาก Overpass API (รัศมี 1,000 ม.)...</span>
         </div>
       )}
     </div>

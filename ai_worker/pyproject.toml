@@ -10,5 +10,10 @@ dependencies = [
     "ultralytics",
     "mlflow",
     "boto3",
-    "httpx"
+    "httpx",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "xgboost",
+    "lightgbm"
 ]

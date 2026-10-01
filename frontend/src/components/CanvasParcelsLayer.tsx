@@ -64,15 +64,14 @@ export const CanvasParcelsLayer = ({
 
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const interactiveCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const hoveredParcelIdRef = useRef<string | number | null>(null);
+  const layerOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const hoveredParcelRef = useRef<ProcessedParcel | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const mouseRafRef = useRef<number | null>(null);
   const mousePosRef = useRef<{ lat: number; lng: number } | null>(null);
   const isInteractingRef = useRef<boolean>(false);
   const isAttachedRef = useRef<boolean>(false);
-
-  // Cached canvas buffer dimensions to prevent unnecessary GPU texture reallocations
-  const canvasSizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
 
   // Store latest props in ref so callbacks don't trigger layer recreation
   const propsRef = useRef({
@@ -87,10 +86,11 @@ export const CanvasParcelsLayer = ({
   const processedData = useMemo(() => {
     const features = data?.features;
     if (!features || !Array.isArray(features) || features.length === 0) {
-      return { parcels: [], grid: new Map<number, number[]>(), bounds: null };
+      return { parcels: [], grid: new Map<number, number[]>(), bounds: null, parcelById: new Map<string | number, ProcessedParcel>() };
     }
 
     const parcels: ProcessedParcel[] = [];
+    const parcelById = new Map<string | number, ProcessedParcel>();
     let minLon = Infinity, maxLon = -Infinity;
     let minLat = Infinity, maxLat = -Infinity;
 
@@ -147,7 +147,7 @@ export const CanvasParcelsLayer = ({
       const centerLat = props.latitude !== undefined ? props.latitude : (sumLat / outerRing.length);
       const [normCenterX, normCenterY] = latLngToNorm(centerLat, centerLon);
 
-      parcels.push({
+      const processed: ProcessedParcel = {
         feature: feat,
         id: fid,
         properties: props,
@@ -161,7 +161,14 @@ export const CanvasParcelsLayer = ({
         normCenterY,
         normRings,
         rawRing: outerRing as Array<[number, number]>,
-      });
+      };
+
+      parcels.push(processed);
+      parcelById.set(fid, processed);
+      parcelById.set(String(fid), processed);
+      if (typeof fid === 'string' && fid.startsWith('OSM-')) {
+        parcelById.set(fid.substring(4), processed);
+      }
     }
 
     // Build 2D Spatial Hash Grid for O(1) lightning-fast point lookup
@@ -194,11 +201,17 @@ export const CanvasParcelsLayer = ({
       parcels,
       grid,
       bounds: { minLon, maxLon, minLat, maxLat, cellW, cellH, GRID_SIZE },
+      parcelById,
     };
   }, [data]);
 
   // Fast query to find parcel at [lng, lat]
   const findParcelAt = useCallback((lng: number, lat: number, allowTolerance = false): ProcessedParcel | null => {
+    // Avoid expensive hit testing on micro subpixel parcels when zoomed out
+    if (!allowTolerance && map.getZoom() < 13) {
+      return null;
+    }
+
     const { parcels, grid, bounds } = processedData;
     if (!bounds || parcels.length === 0) return null;
 
@@ -226,7 +239,7 @@ export const CanvasParcelsLayer = ({
 
     // 2. Click tolerance fallback for small parcels or touch screens
     const zoom = map.getZoom();
-    const pixelToleranceDeg = 0.00025 * Math.pow(2, 14 - zoom);
+    const pixelToleranceDeg = 0.00018 * Math.pow(2, 14 - zoom);
     let bestParcel: ProcessedParcel | null = null;
     let minDist = pixelToleranceDeg;
 
@@ -243,6 +256,14 @@ export const CanvasParcelsLayer = ({
 
     return bestParcel;
   }, [processedData, map]);
+
+  // Fast O(1) lookup of parcel by ID
+  const findParcelById = useCallback((id: string | number | null): ProcessedParcel | null => {
+    if (id === null || id === undefined) return null;
+    const { parcelById } = processedData;
+    if (!parcelById) return null;
+    return parcelById.get(id) || parcelById.get(String(id)) || null;
+  }, [processedData]);
 
   // Build high-information rich popup HTML
   const buildPopupHTML = useCallback((parcel: ProcessedParcel) => {
@@ -298,7 +319,86 @@ export const CanvasParcelsLayer = ({
     `;
   }, []);
 
-  // 2. Render all parcels onto Base Canvas without temporary array allocations
+  // 2. Draw dynamic interactive overlay (Hover highlight + Selected parcel) on top Interactive Canvas
+  const drawInteractiveOverlay = useCallback((
+    hovered: ProcessedParcel | null,
+    selected: ProcessedParcel | null
+  ) => {
+    const canvas = interactiveCanvasRef.current;
+    if (!canvas || !isAttachedRef.current) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!hovered && !selected) return;
+
+    const zoom = map.getZoom();
+    const scale = 256 * Math.pow(2, zoom);
+    const origin = map.getPixelOrigin();
+    const originX = origin.x;
+    const originY = origin.y;
+
+    const topLeft = layerOffsetRef.current;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.translate(-topLeft.x, -topLeft.y);
+
+    // 1. Draw Selected Parcel (Vivid Emerald Green with Neon Border)
+    if (selected) {
+      ctx.save();
+      ctx.shadowColor = '#10b981';
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      for (let rIdx = 0; rIdx < selected.normRings.length; rIdx++) {
+        const ring = selected.normRings[rIdx];
+        const len = ring.length;
+        if (len < 4) continue;
+        ctx.moveTo(ring[0] * scale - originX, ring[1] * scale - originY);
+        for (let ptIdx = 2; ptIdx < len; ptIdx += 2) {
+          ctx.lineTo(ring[ptIdx] * scale - originX, ring[ptIdx + 1] * scale - originY);
+        }
+        ctx.closePath();
+      }
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.7)';
+      ctx.fill();
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 3.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 2. Draw Hovered Parcel (Crisp Electric Sky Blue)
+    if (hovered && (!selected || hovered.id !== selected.id)) {
+      ctx.save();
+      ctx.shadowColor = '#38bdf8';
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      for (let rIdx = 0; rIdx < hovered.normRings.length; rIdx++) {
+        const ring = hovered.normRings[rIdx];
+        const len = ring.length;
+        if (len < 4) continue;
+        ctx.moveTo(ring[0] * scale - originX, ring[1] * scale - originY);
+        for (let ptIdx = 2; ptIdx < len; ptIdx += 2) {
+          ctx.lineTo(ring[ptIdx] * scale - originX, ring[ptIdx + 1] * scale - originY);
+        }
+        ctx.closePath();
+      }
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.fill();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }, [map]);
+
+  const drawInteractiveOverlayRef = useRef(drawInteractiveOverlay);
+
+  // 3. Render all parcels onto Base Canvas (Hardware-accelerated 1:1 Pixel Alignment)
   const drawBaseCanvas = useCallback(() => {
     const canvas = baseCanvasRef.current;
     if (!canvas || !propsRef.current.visible || !isAttachedRef.current) return;
@@ -311,12 +411,49 @@ export const CanvasParcelsLayer = ({
       return;
     }
 
-    const bounds = map.getBounds();
-    const padded = bounds.pad(0.3);
-    const south = padded.getSouth();
-    const north = padded.getNorth();
-    const west = padded.getWest();
-    const east = padded.getEast();
+    // Exact Leaflet viewport measurement
+    const size = map.getSize();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    // 200px buffer around viewport so panning never reveals unrendered edges
+    const pad = 200;
+    const viewTopLeft = map.containerPointToLayerPoint([0, 0]);
+    const topLeft = L.point(Math.round(viewTopLeft.x - pad), Math.round(viewTopLeft.y - pad));
+    const width = Math.round(size.x + pad * 2);
+    const height = Math.round(size.y + pad * 2);
+
+    const pixelW = Math.round(width * dpr);
+    const pixelH = Math.round(height * dpr);
+
+    // Exact 1:1 synchronization between internal buffer pixels and CSS display pixels
+    if (canvas.width !== pixelW || canvas.height !== pixelH) {
+      canvas.width = pixelW;
+      canvas.height = pixelH;
+    } else {
+      ctx.clearRect(0, 0, pixelW, pixelH);
+    }
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    L.DomUtil.setPosition(canvas, topLeft);
+
+    const interCanvas = interactiveCanvasRef.current;
+    if (interCanvas) {
+      if (interCanvas.width !== pixelW || interCanvas.height !== pixelH) {
+        interCanvas.width = pixelW;
+        interCanvas.height = pixelH;
+      }
+      interCanvas.style.width = `${width}px`;
+      interCanvas.style.height = `${height}px`;
+      L.DomUtil.setPosition(interCanvas, topLeft);
+    }
+
+    layerOffsetRef.current = { x: topLeft.x, y: topLeft.y };
+
+    const bounds = map.getBounds().pad(0.35);
+    const south = bounds.getSouth();
+    const north = bounds.getNorth();
+    const west = bounds.getWest();
+    const east = bounds.getEast();
 
     const zoom = map.getZoom();
     const scale = 256 * Math.pow(2, zoom);
@@ -324,49 +461,17 @@ export const CanvasParcelsLayer = ({
     const originX = origin.x;
     const originY = origin.y;
 
-    const topLeft = map.latLngToLayerPoint(padded.getNorthWest());
-    const bottomRight = map.latLngToLayerPoint(padded.getSouthEast());
-    const width = Math.max(10, Math.round(bottomRight.x - topLeft.x));
-    const height = Math.max(10, Math.round(bottomRight.y - topLeft.y));
-
-    L.DomUtil.setPosition(canvas, topLeft);
-
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = Math.round(width * dpr);
-    const targetH = Math.round(height * dpr);
-
-    // Only resize canvas buffer if dimensions actually changed (prevents GPU memory stalls)
-    if (canvasSizeRef.current.w !== targetW || canvasSizeRef.current.h !== targetH) {
-      canvas.width = targetW;
-      canvas.height = targetH;
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      canvasSizeRef.current = { w: targetW, h: targetH };
-
-      const interCanvas = interactiveCanvasRef.current;
-      if (interCanvas) {
-        interCanvas.width = targetW;
-        interCanvas.height = targetH;
-        interCanvas.style.width = `${width}px`;
-        interCanvas.style.height = `${height}px`;
-      }
-    } else {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-
-    const interCanvas = interactiveCanvasRef.current;
-    if (interCanvas) {
-      L.DomUtil.setPosition(interCanvas, topLeft);
-    }
-
     ctx.save();
     ctx.scale(dpr, dpr);
     ctx.translate(-topLeft.x, -topLeft.y);
 
-    const curSelectedId = propsRef.current.selectedParcelId;
     const curScannedIds = propsRef.current.scannedBuildingIds;
     const curMode = propsRef.current.interactionMode;
     const hasScanned = curScannedIds.size > 0;
+
+    // Level-of-Detail (LOD): calculate degree threshold for ~1.5 screen pixels
+    const degPerPixel = 360 / scale;
+    const minSpan = degPerPixel * 1.5;
 
     // PASS 1: Batch Draw Normal Parcels (Single Path Call)
     ctx.beginPath();
@@ -376,7 +481,8 @@ export const CanvasParcelsLayer = ({
       if (p.maxLon < west || p.minLon > east || p.maxLat < south || p.minLat > north) {
         continue;
       }
-      if (curSelectedId !== null && (p.id === curSelectedId || String(p.id) === String(curSelectedId))) {
+      // Skip invisible subpixel parcels (< 1.5px) when zoomed out to keep 60 FPS
+      if (zoom < 14 && (p.maxLon - p.minLon) < minSpan && (p.maxLat - p.minLat) < minSpan) {
         continue;
       }
       if (hasScanned && (curScannedIds.has(p.id) || curScannedIds.has(String(p.id)) || curScannedIds.has(Number(p.id)))) {
@@ -398,11 +504,8 @@ export const CanvasParcelsLayer = ({
 
     if (hasNormal) {
       if (zoom < 14) {
-        ctx.fillStyle = 'rgba(6, 182, 212, 0.4)';
+        ctx.fillStyle = 'rgba(6, 182, 212, 0.45)';
         ctx.fill();
-        ctx.strokeStyle = '#00f2fe';
-        ctx.lineWidth = 1.0;
-        ctx.stroke();
       } else {
         ctx.fillStyle = curMode === 'select' ? 'rgba(6, 182, 212, 0.25)' : 'rgba(2, 132, 199, 0.32)';
         ctx.fill();
@@ -419,9 +522,6 @@ export const CanvasParcelsLayer = ({
       for (let i = 0; i < parcels.length; i++) {
         const p = parcels[i];
         if (p.maxLon < west || p.minLon > east || p.maxLat < south || p.minLat > north) {
-          continue;
-        }
-        if (curSelectedId !== null && (p.id === curSelectedId || String(p.id) === String(curSelectedId))) {
           continue;
         }
         if (!curScannedIds.has(p.id) && !curScannedIds.has(String(p.id)) && !curScannedIds.has(Number(p.id))) {
@@ -450,43 +550,16 @@ export const CanvasParcelsLayer = ({
       }
     }
 
-    // PASS 3: Selected Parcel (Vivid Emerald Green with Glow)
-    if (curSelectedId !== null) {
-      for (let i = 0; i < parcels.length; i++) {
-        const p = parcels[i];
-        if (p.id === curSelectedId || String(p.id) === String(curSelectedId)) {
-          ctx.save();
-          ctx.shadowColor = '#10b981';
-          ctx.shadowBlur = 12;
-          ctx.beginPath();
-          for (let rIdx = 0; rIdx < p.normRings.length; rIdx++) {
-            const ring = p.normRings[rIdx];
-            const len = ring.length;
-            if (len < 4) continue;
-            ctx.moveTo(ring[0] * scale - originX, ring[1] * scale - originY);
-            for (let ptIdx = 2; ptIdx < len; ptIdx += 2) {
-              ctx.lineTo(ring[ptIdx] * scale - originX, ring[ptIdx + 1] * scale - originY);
-            }
-            ctx.closePath();
-          }
-          ctx.fillStyle = 'rgba(16, 185, 129, 0.7)';
-          ctx.fill();
-          ctx.strokeStyle = '#10b981';
-          ctx.lineWidth = 3.5;
-          ctx.stroke();
-          ctx.restore();
-          break;
-        }
-      }
-    }
-
     ctx.restore();
-  }, [processedData, map]);
 
-  // Keep a stable ref to drawBaseCanvas
+    // Immediately re-anchor interactive overlay at the new canvas offset
+    const currentSelected = propsRef.current.selectedParcelId !== null ? findParcelById(propsRef.current.selectedParcelId) : null;
+    drawInteractiveOverlayRef.current(hoveredParcelRef.current, currentSelected);
+  }, [processedData, map, findParcelById]);
+
+  // Keep stable refs to draw functions
   const drawBaseCanvasRef = useRef(drawBaseCanvas);
 
-  // Synchronize refs on every update without triggering render-phase warnings
   useEffect(() => {
     propsRef.current = {
       visible,
@@ -496,54 +569,8 @@ export const CanvasParcelsLayer = ({
       onSelectParcel,
     };
     drawBaseCanvasRef.current = drawBaseCanvas;
+    drawInteractiveOverlayRef.current = drawInteractiveOverlay;
   });
-
-  // 3. Draw hover highlight on top Interactive Canvas
-  const drawHoverHighlight = useCallback((hoveredParcel: ProcessedParcel | null) => {
-    const canvas = interactiveCanvasRef.current;
-    if (!canvas || !isAttachedRef.current) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (!hoveredParcel) return;
-
-    const zoom = map.getZoom();
-    const scale = 256 * Math.pow(2, zoom);
-    const origin = map.getPixelOrigin();
-    const originX = origin.x;
-    const originY = origin.y;
-
-    const bounds = map.getBounds();
-    const padded = bounds.pad(0.3);
-    const topLeft = map.latLngToLayerPoint(padded.getNorthWest());
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    ctx.translate(-topLeft.x, -topLeft.y);
-
-    ctx.shadowColor = '#38bdf8';
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    for (let rIdx = 0; rIdx < hoveredParcel.normRings.length; rIdx++) {
-      const ring = hoveredParcel.normRings[rIdx];
-      const len = ring.length;
-      if (len < 4) continue;
-      ctx.moveTo(ring[0] * scale - originX, ring[1] * scale - originY);
-      for (let ptIdx = 2; ptIdx < len; ptIdx += 2) {
-        ctx.lineTo(ring[ptIdx] * scale - originX, ring[ptIdx + 1] * scale - originY);
-      }
-      ctx.closePath();
-    }
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.55)';
-    ctx.fill();
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 2.8;
-    ctx.stroke();
-
-    ctx.restore();
-  }, [map]);
 
   // Request Animation Frame throttled draw
   const requestDraw = useCallback(() => {
@@ -603,7 +630,6 @@ export const CanvasParcelsLayer = ({
     };
 
     const handleResize = () => {
-      canvasSizeRef.current = { w: 0, h: 0 }; // force re-measure on window resize
       requestDraw();
     };
 
@@ -629,12 +655,18 @@ export const CanvasParcelsLayer = ({
     };
   }, [context, map, requestDraw]);
 
-  // 5. Redraw when props change without tearing down the layer
+  // 5. Redraw base canvas when dataset, visibility, radar scanned parcels, or mode changes
   useEffect(() => {
     requestDraw();
-  }, [requestDraw, selectedParcelId, scannedBuildingIds, visible, interactionMode, processedData]);
+  }, [requestDraw, scannedBuildingIds, visible, interactionMode, processedData]);
 
-  // 6. Map mousemove with RAF throttling for ultra-fluid 60 FPS hover
+  // 6. Fast instant update for selected parcel (draws only on top canvas without redrawing 21k base parcels)
+  useEffect(() => {
+    const selectedParcel = findParcelById(selectedParcelId);
+    drawInteractiveOverlay(hoveredParcelRef.current, selectedParcel);
+  }, [selectedParcelId, findParcelById, drawInteractiveOverlay]);
+
+  // 7. Map mousemove with RAF throttling for ultra-fluid 60 FPS hover
   useEffect(() => {
     if (!visible) return;
 
@@ -649,10 +681,14 @@ export const CanvasParcelsLayer = ({
           const { lat, lng } = mousePosRef.current;
           const hit = findParcelAt(lng, lat, false); // Strict point-in-polygon only
           const hitId = hit ? hit.id : null;
+          const prevId = hoveredParcelRef.current ? hoveredParcelRef.current.id : null;
 
-          if (hitId !== hoveredParcelIdRef.current) {
-            hoveredParcelIdRef.current = hitId;
-            drawHoverHighlight(hit);
+          if (hitId !== prevId) {
+            hoveredParcelRef.current = hit;
+            const currentSelected = propsRef.current.selectedParcelId !== null
+              ? findParcelById(propsRef.current.selectedParcelId)
+              : null;
+            drawInteractiveOverlay(hit, currentSelected);
             const mapContainer = map.getContainer();
             if (hit) {
               mapContainer.style.cursor = 'pointer';
@@ -669,9 +705,12 @@ export const CanvasParcelsLayer = ({
         cancelAnimationFrame(mouseRafRef.current);
         mouseRafRef.current = null;
       }
-      if (hoveredParcelIdRef.current !== null) {
-        hoveredParcelIdRef.current = null;
-        drawHoverHighlight(null);
+      if (hoveredParcelRef.current !== null) {
+        hoveredParcelRef.current = null;
+        const currentSelected = propsRef.current.selectedParcelId !== null
+          ? findParcelById(propsRef.current.selectedParcelId)
+          : null;
+        drawInteractiveOverlay(null, currentSelected);
         map.getContainer().style.cursor = '';
       }
     };
@@ -704,7 +743,7 @@ export const CanvasParcelsLayer = ({
       map.off('click', handleClick);
       map.getContainer().style.cursor = '';
     };
-  }, [map, visible, findParcelAt, drawHoverHighlight, buildPopupHTML]);
+  }, [map, visible, findParcelAt, findParcelById, drawInteractiveOverlay, buildPopupHTML]);
 
   return null;
 };

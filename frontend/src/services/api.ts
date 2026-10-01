@@ -80,7 +80,88 @@ export async function getPredictionStatus(jobId: string): Promise<PredictionResu
  * Retrieve active appraisal dataset GeoJSON features for Select Mode
  */
 export async function fetchActiveGeoJSON(): Promise<any> {
-  const response = await apiClient.get('/api/v1/appraisal-data/active-geojson');
+  const response = await apiClient.get('/api/v1/appraisal-data/active-geojson', {
+    timeout: 60000, // 60s timeout for large GIS dataset over mobile / remote tunnels
+  });
   return response.data;
 }
+
+export interface TargetBuildingData {
+  found: boolean;
+  id?: string;
+  confidence: number;
+  area_sqm: number;
+  area_wah: number;
+  width_m: number;
+  length_m: number;
+  price_per_wah: number;
+  price_per_sqm?: number;
+  total_estimated_price: number;
+  road_name: string;
+  zone_name: string;
+  subdistrict: string;
+  district: string;
+  valuation_source?: string;
+  source_badge?: 'real_exact' | 'ai_ml_model' | 'ai_model_baseline' | 'hybrid_interpolated';
+  nearest_dist_m?: number;
+  nearest_parcel_id?: string;
+  parcel_total_value?: number;
+  parcel_area_sqm?: number;
+  parcel_area_wah?: number;
+  market_price_per_sqw?: number;
+  center: [number, number]; // [lat, lon]
+  coordinates: number[][];   // [[lon, lat], ...]
+}
+
+export interface SurroundingBuildingData {
+  id: string;
+  confidence: number;
+  area_sqm: number;
+  area_wah: number;
+  width_m: number;
+  length_m: number;
+  distance_m: number;
+  coordinates: number[][];
+  center: [number, number];
+}
+
+export interface RadarVisionResponse {
+  status: string;
+  target_building: TargetBuildingData;
+  radar_summary: {
+    radius_meters: number;
+    total_buildings_detected: number;
+    density_level: string;
+    zone_name: string;
+    road_name: string;
+    base_price_wah: number;
+  };
+  surrounding_buildings: SurroundingBuildingData[];
+}
+
+/**
+ * Perform 200m AI Vision Radar building detection using YOLOv8 best.pt
+ */
+export async function scanVisionRadar(
+  latitude: number,
+  longitude: number,
+  radiusMeters: number = 200.0,
+  confThreshold: number = 0.25
+): Promise<RadarVisionResponse> {
+  const response = await apiClient.post<RadarVisionResponse>(
+    '/api/v1/vision/radar-detect',
+    {
+      latitude,
+      longitude,
+      radius_meters: radiusMeters,
+      conf_threshold: confThreshold,
+    },
+    {
+      timeout: 35000,
+    }
+  );
+  return response.data;
+}
+
+
 
