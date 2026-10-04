@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 .uv/
 uv.lock
+~$*
 
 # Docker Volumes / Local Data (ห้ามนำขึ้น Git เด็ดขาด)
 postgres_data/

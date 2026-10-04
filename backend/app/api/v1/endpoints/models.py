@@ -13,7 +13,7 @@ from app.schemas.model import (
     ModelVersionDetail,
 )
 from app.services.minio_service import MinIOService, get_minio_service
-from app.services.queue import get_redis_pool, enqueue_training_job
+from app.services.queue import get_redis_pool, enqueue_training_job, QUEUE_TRAINING
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -195,7 +195,8 @@ async def trigger_model_training(
             await pool.enqueue_job(
                 "train_price_model",
                 dataset_info,
-                _job_id=job_id
+                _job_id=job_id,
+                _queue_name=QUEUE_TRAINING
             )
             logger.info(
                 f"Successfully enqueued 'train_price_model' job to Redis ARQ: job_id={job_id}"
@@ -310,7 +311,9 @@ async def trigger_vision_retrain(
             epochs=epochs,
             batch_size=batch_size,
             force_execute=True,
-            job_id=job_id
+            job_id=job_id,
+            _job_id=job_id,
+            _queue_name=QUEUE_TRAINING
         )
     
     return {

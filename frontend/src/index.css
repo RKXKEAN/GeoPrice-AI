@@ -381,6 +381,90 @@ html, body, #root {
   color: #ffffff !important;
 }
 
+/* ========================================================== */
+/* 📐 ON-MAP LIVE DRAWN PLOT BADGE & TOOLTIP                  */
+/* ========================================================== */
+.drawn-plot-area-badge {
+  background: rgba(15, 23, 42, 0.94) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1.5px solid #10b981 !important;
+  border-radius: 10px !important;
+  padding: 6px 12px !important;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.7), 0 0 20px rgba(16, 185, 129, 0.4) !important;
+  color: #ffffff !important;
+  font-family: system-ui, sans-serif !important;
+  pointer-events: none !important;
+}
 
+.drawn-plot-area-badge::before {
+  border-top-color: #10b981 !important;
+}
 
+/* ========================================================== */
+/* 🎨 ENHANCED LEAFLET DRAW TOOLBAR STYLES                    */
+/* ========================================================== */
+.leaflet-draw-toolbar {
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  border: 1.5px solid rgba(56, 189, 248, 0.4) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 15px rgba(56, 189, 248, 0.25) !important;
+  background: rgba(15, 23, 42, 0.92) !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+.leaflet-draw-toolbar a {
+  background-color: rgba(15, 23, 42, 0.9) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #38bdf8 !important;
+  width: 34px !important;
+  height: 34px !important;
+  line-height: 34px !important;
+  transition: all 0.2s ease !important;
+}
+
+.leaflet-draw-toolbar a:hover {
+  background-color: rgba(14, 165, 233, 0.35) !important;
+  color: #ffffff !important;
+}
+
+.leaflet-draw-actions {
+  background: rgba(15, 23, 42, 0.95) !important;
+  border: 1px solid rgba(56, 189, 248, 0.4) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6) !important;
+}
+
+.leaflet-draw-actions li a {
+  background-color: transparent !important;
+  color: #e2e8f0 !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 0 10px !important;
+  line-height: 28px !important;
+  height: 28px !important;
+}
+
+.leaflet-draw-actions li a:hover {
+  background-color: rgba(56, 189, 248, 0.25) !important;
+  color: #38bdf8 !important;
+}
+
+/* ========================================================== */
+/* 🖤 MINIMALIST SCROLLBAR FOR ADMIN DASHBOARD                */
+/* ========================================================== */
+.admin-custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.admin-custom-scrollbar::-webkit-scrollbar-track {
+  background: #090d16;
+}
+.admin-custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 9999px;
+}
+.admin-custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
 

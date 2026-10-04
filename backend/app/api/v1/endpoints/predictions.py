@@ -43,6 +43,8 @@ async def create_price_prediction(
         request.features["latitude"] = request.latitude
         request.features["longitude"] = request.longitude
         request.features["land_use_zone"] = request.land_use_zone
+        request.features["selected_model"] = request.selected_model or "xgboost"
+        request.features["force_model"] = bool(request.force_model)
 
         # 1. Create LandPlot record
         land_plot = LandPlot(

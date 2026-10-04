@@ -14,17 +14,21 @@ import {
   Navigation,
   Radio,
   Pencil,
-  Sliders
+  Sliders,
+  BarChart3,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
+
 import * as turf from '@turf/turf';
 import hatYaiLandmarksData from './data/hatyai_landmarks.json';
 import { MapComponent } from './components/MapComponent';
 import type { DrawnPlotData } from './components/MapComponent';
-import { FeedbackWidget } from './components/FeedbackWidget';
 import { AdminLogin } from './components/AdminLogin';
 import { AdminDashboard } from './components/AdminDashboard';
 import type { AdminUser } from './services/adminApi';
-import { submitPricePrediction } from './services/api';
+import { submitPricePrediction, getPredictionStatus, scanVisionRadar } from './services/api';
+import { resolveZoneAppraisalRate } from './services/zonePricing';
 import type {
   PredictionJobResponse, 
   PredictionResult,
@@ -72,7 +76,7 @@ export function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Mode state: 'draw' | 'select' (default to select/radar)
+  // Mode state: 'draw' | 'select' (default to AI Vision Radar select mode)
   const [interactionMode, setInteractionMode] = useState<'draw' | 'select'>('select');
 
   // Plot state
@@ -80,6 +84,9 @@ export function App() {
   const [plotName, setPlotName] = useState('พื้นที่ตรวจสอบ GeoPrice');
   const [landUseZone, setLandUseZone] = useState('สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)');
   const [predictionYears, setPredictionYears] = useState(1);
+  const [selectedModel, setSelectedModel] = useState<'xgboost' | 'arimax'>('xgboost');
+  const [forceModel, setForceModel] = useState(false);
+  const [showModelComparison, setShowModelComparison] = useState(true);
 
   // AI Vision Radar (best.pt) states
   const [visionResult, setVisionResult] = useState<RadarVisionResponse | null>(null);
@@ -99,12 +106,18 @@ export function App() {
   const wsRef = useRef<WebSocket | null>(null);
 
 
-  const handlePlotDrawn = useCallback((data: DrawnPlotData) => {
+  const handlePlotDrawn = useCallback((data: DrawnPlotData | null) => {
+    if (!data) {
+      setPlotData(null);
+      return;
+    }
     setPlotData(data);
     if (data.plotName) {
       setPlotName(data.plotName);
     }
     setSubmissionError(null);
+    setVisionResult(null);
+    setScannedBuildings(null);
   }, []);
 
   const handlePlotCleared = useCallback(() => {
@@ -126,10 +139,92 @@ export function App() {
     }
   }, []);
 
-
   const handleRadarScanned = useCallback((count: number) => {
     setScannedBuildings(count);
   }, []);
+
+  // Optional manual scan around the drawn plot (surroundings: bounding boxes, plot area strictly preserved)
+  const handleScanRadarAroundPlot = useCallback(async () => {
+    if (!plotData) return;
+    setIsVisionScanning(true);
+    try {
+      const res = await scanVisionRadar(plotData.latitude, plotData.longitude, 200.0, 0.25);
+      
+      // ในระบบวาดแปลง (Draw Mode): แปลงที่ผู้ใช้วาดคือเป้าหมายหลัก 100%
+      // ห้ามมี "สิ่งปลูกสร้างเป้าหมาย (target_building)" โผล่ขึ้นมาซ้อนทับแปลงที่วาด
+      // หากโมเดลตรวจพบอาคารตรงจุดศูนย์กลาง ให้นำไปรวมในอาคารรอบข้าง (Bounding Box) เพื่อใช้วิเคราะห์ความหนาแน่น 200 ม. เท่านั้น
+      let allSurrounding = [...(res.surrounding_buildings || [])];
+      if (res.target_building && res.target_building.coordinates?.length) {
+        const tb = res.target_building;
+        const alreadyIncluded = allSurrounding.some(b => b.id === tb.id);
+        if (!alreadyIncluded) {
+          const lats = tb.coordinates.map((c: any) => c[0]);
+          const lngs = tb.coordinates.map((c: any) => c[1]);
+          allSurrounding.push({
+            id: tb.id || 'BLD-ENV',
+            confidence: tb.confidence,
+            distance_m: 0,
+            area_sqm: tb.area_sqm,
+            area_wah: tb.area_wah || Math.round((tb.area_sqm / 4) * 100) / 100,
+            width_m: tb.width_m,
+            length_m: tb.length_m,
+            center: tb.center || [plotData.latitude, plotData.longitude],
+            shape_type: 'bbox',
+            coordinates: [
+              [Math.min(...lats), Math.min(...lngs)],
+              [Math.max(...lats), Math.min(...lngs)],
+              [Math.max(...lats), Math.max(...lngs)],
+              [Math.min(...lats), Math.max(...lngs)],
+              [Math.min(...lats), Math.min(...lngs)]
+            ]
+          });
+        }
+      }
+
+      setVisionResult({
+        ...res,
+        target_building: null as any,
+        surrounding_buildings: allSurrounding,
+        radar_summary: {
+          ...res.radar_summary,
+          total_buildings_detected: allSurrounding.length
+        }
+      });
+      setScannedBuildings(allSurrounding.length);
+    } catch (err: any) {
+      console.error('Scan radar around plot error:', err);
+      alert('เกิดข้อผิดพลาดในการสแกนเรดาร์: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setIsVisionScanning(false);
+    }
+  }, [plotData]);
+
+
+  // Convert Target Building Polygon into an editable Drawn Plot
+  const handleUseTargetBuildingAsPlot = useCallback(() => {
+    if (!visionResult?.target_building) return;
+    const tb = visionResult.target_building;
+    const geoJson: any = {
+      type: 'Polygon',
+      coordinates: [tb.coordinates],
+    };
+    const area = turf.area(geoJson);
+    const calculatedAreaSqm = Math.round(area * 100) / 100;
+
+    const newPlot: DrawnPlotData = {
+      geometry: geoJson,
+      latitude: tb.center[0],
+      longitude: tb.center[1],
+      areaSqm: calculatedAreaSqm,
+      priceRef: tb.price_per_wah,
+      plotName: `แปลงอาคาร ${tb.road_name}`,
+      source: 'draw',
+    };
+
+    setPlotData(newPlot);
+    setPlotName(`แปลงอาคาร ${tb.road_name}`);
+    setInteractionMode('draw');
+  }, [visionResult]);
 
   // Helper: Convert Square Meters to Thai Traditional Land Units (Rai - Ngan - Wah)
   const formatThaiLandArea = (sqm: number) => {
@@ -293,8 +388,12 @@ export function App() {
         geometry: plotData.geometry,
         area_size_sqm: plotData.areaSqm,
         land_use_zone: landUseZone,
+        selected_model: selectedModel,
+        force_model: forceModel,
         features: {
           prediction_years: predictionYears,
+          selected_model: selectedModel,
+          force_model: forceModel,
           distance_to_center_km: 1.5,
           nearest_poi_name: nearestPOI?.name,
           nearest_poi_distance_m: nearestPOI?.distanceMeters,
@@ -302,6 +401,7 @@ export function App() {
           road_access: true,
         },
       });
+
 
       setActiveJob(response);
       setJobResult({
@@ -351,6 +451,28 @@ export function App() {
       ws.onclose = () => {
         console.log('WebSocket connection closed.');
       };
+
+      // 3. Fallback Polling Loop to guarantee 100% result delivery regardless of WebSocket connectivity
+      let pollAttempts = 0;
+      const pollInterval = setInterval(async () => {
+        pollAttempts++;
+        if (pollAttempts > 30) {
+          clearInterval(pollInterval);
+          return;
+        }
+        try {
+          const res = await getPredictionStatus(response.job_id);
+          if (res && (res.status === 'completed' || res.status === 'failed')) {
+            setJobResult(res);
+            clearInterval(pollInterval);
+            if (wsRef.current) {
+              try { wsRef.current.close(); } catch {}
+            }
+          }
+        } catch {
+          // ignore transient poll error
+        }
+      }, 1200);
     } catch (err: any) {
       console.error('Failed to submit prediction:', err);
       const errMsg = err.response?.data?.detail || err.message || 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ Backend ได้';
@@ -444,7 +566,12 @@ export function App() {
           nearestPOI={nearestPOI}
           interactionMode={interactionMode}
           visionResult={visionResult}
-          onVisionResult={setVisionResult}
+          onVisionResult={(res) => {
+            setVisionResult(res);
+            if (res) {
+              setPlotData(null);
+            }
+          }}
           isVisionScanning={isVisionScanning}
           setIsVisionScanning={setIsVisionScanning}
         />
@@ -475,7 +602,10 @@ export function App() {
           <div className="bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 flex items-center gap-1.5 shadow-inner">
             <button
               type="button"
-              onClick={() => setInteractionMode('select')}
+              onClick={() => {
+                setInteractionMode('select');
+                setPlotData(null);
+              }}
               className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
                 interactionMode === 'select'
                   ? 'bg-cyan-600 text-white shadow-md shadow-cyan-500/25 border border-cyan-400/30'
@@ -541,42 +671,128 @@ export function App() {
               </select>
             </div>
 
-            {/* AI Vision Radar Target Building Detail Card */}
-            {visionResult?.target_building ? (
+            {/* SECTION: If plotData exists, the Drawn Plot strictly determines area and valuation */}
+            {plotData ? (
               <div className="space-y-3 pt-1">
-                {/* Confidence & Model Badge */}
+                {/* Drawn Plot Verification Badge */}
                 <div className="bg-emerald-950/40 p-2.5 rounded-lg border border-emerald-800/50 flex items-center justify-between gap-2 shadow-sm">
                   <div className="flex items-center gap-1.5 text-xs text-emerald-300 font-semibold">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span>ตรวจพบโดย YOLOv8 (best.pt):</span>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>แปลงที่ดินจากการวาด (Drawn Plot):</span>
                   </div>
                   <div className="text-[11px] text-emerald-200 font-mono bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
-                    ความมั่นใจ {Math.round(visionResult.target_building.confidence * 100)}%
+                    นับ ตร.ม. จากรูปแปลงจริง
                   </div>
                 </div>
 
-                {/* Valuation Source Badge */}
-                {visionResult.target_building.valuation_source && (
-                  <div className={`p-2.5 rounded-lg text-xs font-medium flex items-center gap-2 border shadow-sm ${
-                    visionResult.target_building.source_badge === 'real_exact'
-                      ? 'bg-emerald-950/60 border-emerald-600/70 text-emerald-300'
-                      : visionResult.target_building.source_badge === 'ai_ml_model'
-                      ? 'bg-purple-950/60 border-purple-600/70 text-purple-300'
-                      : 'bg-indigo-950/60 border-indigo-600/70 text-indigo-300'
-                  }`}>
-                    <span className="shrink-0 text-sm">
-                      {visionResult.target_building.source_badge === 'real_exact' ? '🟢' : '🟣'}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="font-bold truncate">{visionResult.target_building.valuation_source}</div>
-                      <div className="text-[10px] opacity-80 mt-0.5">
-                        {visionResult.target_building.source_badge === 'real_exact'
-                          ? 'ดึงจากฐานข้อมูลจริงกรมธนารักษ์โดยตรง (ไม่ผ่านโมเดลคำนวณ)'
-                          : 'ทำนายราคาด้วยโมเดล ML (Ensemble Model) เนื่องจากไม่มีแปลงสำรวจจริง'}
+                {/* Road & Zone Name and Metrics strictly from Drawn Plot */}
+                {(() => {
+                  const zonePricing = resolveZoneAppraisalRate(plotData.latitude, plotData.longitude);
+                  const roadName = plotData.plotName && !plotData.plotName.includes('พื้นที่ตรวจสอบ') 
+                    ? plotData.plotName 
+                    : zonePricing.road_name;
+                  const unitPriceWah = plotData.priceRef || zonePricing.price_per_wah || 38000;
+                  const unitPriceSqm = Math.round(unitPriceWah / 4);
+                  const totalPrice = Math.round((plotData.areaSqm / 4) * unitPriceWah);
+                  const sourceBadge = zonePricing.source_badge;
+                  const sourceText = zonePricing.valuation_source;
+
+                  return (
+                    <>
+                      <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 space-y-1">
+                        <div className="text-[10px] text-slate-400">ทำเล / โซนราคาประเมิน</div>
+                        <div className="text-sm font-bold text-white flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                          {roadName}
+                        </div>
+                        <div className="text-xs text-slate-300">
+                          {zonePricing.zone_name} (ต.{zonePricing.subdistrict} อ.{zonePricing.district})
+                        </div>
                       </div>
-                    </div>
+
+                      {/* Metrics 2x2 Grid based strictly on Drawn plotData.areaSqm */}
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                          <div className="text-[10px] text-slate-400">ขนาดพื้นที่ (คำนวณจากการวาด)</div>
+                          <div className="text-sm font-bold text-emerald-400 mt-0.5">
+                            {plotData.areaSqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-medium">
+                            ({formatThaiLandArea(plotData.areaSqm)})
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                          <div className="text-[10px] text-slate-400">
+                            {sourceBadge === 'real_exact' ? 'ราคาประเมินจริง (ต่อ ตร.ว.)' : 'ราคาประเมินฐาน (ต่อ ตร.ว.)'}
+                          </div>
+                          <div className="text-xs font-bold text-amber-300 mt-0.5">
+                            ฿{unitPriceWah.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">/ ตร.ว.</span>
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            (~฿{unitPriceSqm.toLocaleString()} / ตร.ม.)
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                          <div className="text-[10px] text-slate-400">จุดศูนย์กลางแปลง (Lat, Lng)</div>
+                          <div className="text-xs font-mono font-medium text-slate-200 mt-1 truncate">
+                            {plotData.latitude}, {plotData.longitude}
+                          </div>
+                          <div className="text-[10px] text-slate-500">พิกัดทางภูมิศาสตร์ WGS84</div>
+                        </div>
+
+                        <div className="bg-emerald-950/60 p-2.5 rounded-lg border border-emerald-700/60 shadow-inner">
+                          <div className="text-[10px] text-emerald-300 font-medium">มูลค่าประเมินรวม (แปลงที่วาด)</div>
+                          <div className="text-sm font-extrabold text-emerald-400 mt-0.5">
+                            ฿{totalPrice.toLocaleString()}
+                          </div>
+                          <div className="text-[9px] text-emerald-300/70 truncate" title={sourceText}>
+                            {sourceBadge === 'real_exact' ? '🟢 ข้อมูลจริงกรมธนารักษ์' : '🟣 อัตราฐานราคาประเมิน'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Optional On-Demand AI Radar Scan button around drawn plot */}
+                      <div className="pt-0.5">
+                        <button
+                          type="button"
+                          onClick={handleScanRadarAroundPlot}
+                          disabled={isVisionScanning}
+                          className="w-full py-2 px-3 rounded-xl bg-cyan-950/50 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-700/50 text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm hover:scale-[1.01]"
+                        >
+                          {isVisionScanning ? (
+                            <>
+                              <span className="w-3.5 h-3.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                              <span>กำลังสแกนเรดาร์รอบแปลง 200 ม....</span>
+                            </>
+                          ) : (
+                            <>
+                              <Radar className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                              <span>🛰️ สแกนเรดาร์สิ่งปลูกสร้างรอบแปลง 200 ม.</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+
+
+              </div>
+            ) : visionResult?.target_building ? (
+              /* SECTION: User scanned in Select Mode, Target Building Polygon detected */
+              <div className="space-y-3 pt-1">
+                {/* Confidence & Shape Type Badge */}
+                <div className="bg-cyan-950/40 p-2.5 rounded-lg border border-cyan-800/50 flex items-center justify-between gap-2 shadow-sm">
+                  <div className="flex items-center gap-1.5 text-xs text-cyan-300 font-semibold">
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span>AI Vision Radar (ตรวจพบรูปทรง Polygon):</span>
                   </div>
-                )}
+                  <div className="text-[11px] text-cyan-200 font-mono bg-cyan-900/60 px-2 py-0.5 rounded border border-cyan-700/50">
+                    ความมั่นใจ {Math.round(visionResult.target_building.confidence * 100)}%
+                  </div>
+                </div>
 
                 {/* Road & Zone Name */}
                 <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 space-y-1">
@@ -590,29 +806,26 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Metrics 2x2 Grid */}
+                {/* Building Footprint Dimensions */}
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">ขนาดพื้นที่สิ่งปลูกสร้าง</div>
-                    <div className="text-sm font-bold text-cyan-400 mt-0.5">
-                      {visionResult.target_building.area_sqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-medium">
-                      ({visionResult.target_building.area_wah} ตร.ว.)
-                    </div>
-                  </div>
-                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">มิติอาคาร (กว้าง x ยาว)</div>
+                    <div className="text-[10px] text-slate-400">มิติตัวอาคาร (กว้าง × ยาว)</div>
                     <div className="text-xs font-semibold text-slate-200 mt-1">
                       {visionResult.target_building.width_m} × {visionResult.target_building.length_m} ม.
                     </div>
-                    <div className="text-[10px] text-slate-500">ตรวจจับด้วย YOLOv8 Vision</div>
+                    <div className="text-[10px] text-slate-500">รูปทรง Polygon สถาปัตยกรรม</div>
                   </div>
 
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">
-                      {visionResult.target_building.source_badge === 'real_exact' ? 'ราคาประเมินจริง (ต่อ ตร.ว.)' : 'ราคาประเมินโมเดล ML'}
+                    <div className="text-[10px] text-slate-400">พื้นที่รอยเท้าอาคาร (Footprint)</div>
+                    <div className="text-sm font-bold text-cyan-400 mt-0.5">
+                      {visionResult.target_building.area_sqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
                     </div>
+                    <div className="text-[10px] text-slate-400">({visionResult.target_building.area_wah} ตร.ว.)</div>
+                  </div>
+
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">ราคาประเมินโซน (ต่อ ตร.ว.)</div>
                     <div className="text-xs font-bold text-amber-300 mt-0.5">
                       ฿{visionResult.target_building.price_per_wah.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">/ ตร.ว.</span>
                     </div>
@@ -620,73 +833,40 @@ export function App() {
                       (~฿{Math.round(visionResult.target_building.price_per_wah / 4).toLocaleString()} / ตร.ม.)
                     </div>
                   </div>
-                  <div className="bg-emerald-950/60 p-2.5 rounded-lg border border-emerald-700/60 shadow-inner">
-                    <div className="text-[10px] text-emerald-300 font-medium">มูลค่าประเมินรวม</div>
-                    <div className="text-sm font-extrabold text-emerald-400 mt-0.5">
-                      ฿{visionResult.target_building.total_estimated_price.toLocaleString()}
+
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[10px] text-slate-400">แหล่งข้อมูลราคา</div>
+                    <div className="text-xs font-semibold text-emerald-400 mt-1 truncate">
+                      {visionResult.target_building.valuation_source || 'กรมธนารักษ์ / ML'}
                     </div>
-                    <div className="text-[9px] text-emerald-300/70">
-                      {visionResult.target_building.source_badge === 'real_exact'
-                        ? '🟢 ข้อมูลจริงกรมธนารักษ์'
-                        : '🟣 โมเดล AI ML Ensemble'}
-                    </div>
+                    <div className="text-[10px] text-slate-500">ฐานข้อมูลทางการ</div>
                   </div>
                 </div>
 
-                {/* Real Cadastral Parcel Extra Info if available */}
-                {visionResult.target_building.parcel_total_value && (
-                  <div className="bg-emerald-950/30 p-2.5 rounded-lg border border-emerald-800/40 text-[11px] text-emerald-300 flex items-center justify-between">
-                    <div>
-                      <span className="font-semibold text-emerald-200">มูลค่าทั้งแปลงโฉนดจริง:</span> ฿{visionResult.target_building.parcel_total_value.toLocaleString()}
-                    </div>
-                    <div className="text-[10px] text-emerald-400/80">
-                      (แปลงขนาด {visionResult.target_building.parcel_area_wah} ตร.ว.)
-                    </div>
+                {/* Important Notice & Drawing Action Buttons */}
+                <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-800/40 text-xs text-amber-200 space-y-2">
+                  <div className="flex items-start gap-1.5 text-[11px] leading-relaxed">
+                    <span className="shrink-0 mt-0.5">💡</span>
+                    <span>
+                      <strong>เพื่อการประเมินราคาแปลงที่ดินที่ถูกต้อง:</strong> ระบบจะคำนวณ ตร.ม. จากการวาดแปลงที่ดิน ไม่ใช้ขนาดตัวอาคารของโมเดล
+                    </span>
                   </div>
-                )}
-
-                {/* Nearest POI Fast Summary Badge */}
-                {nearestPOI && (
-                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between gap-2 shadow-sm">
-                    <div className="min-w-0">
-                      <div className="text-[10px] text-slate-400 flex items-center gap-1">
-                        <MapPin className="w-3 h-3 text-cyan-400 shrink-0" /> สถานที่สำคัญใกล้เคียงที่สุด
-                      </div>
-                      <div className="text-xs font-semibold text-slate-200 truncate mt-0.5">
-                        {nearestPOI.name}
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
-                        nearestPOI.isWithin500m
-                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                          : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
-                      }`}>
-                        {nearestPOI.distanceMeters} ม.
-                      </span>
-                      <div className="text-[9px] text-slate-500 mt-0.5">ระยะถนน OSRM</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : plotData ? (
-              /* If manually drawn */
-              <div className="space-y-2.5 pt-1">
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">จุดศูนย์กลาง (Lat, Lng)</div>
-                    <div className="text-xs font-mono font-medium text-slate-200 mt-0.5 truncate">
-                      {plotData.latitude}, {plotData.longitude}
-                    </div>
-                  </div>
-                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">ขนาดพื้นที่คำนวณ</div>
-                    <div className="text-xs font-bold text-emerald-400 mt-0.5">
-                      {plotData.areaSqm.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">ตร.ม.</span>
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-medium">
-                      ({formatThaiLandArea(plotData.areaSqm)})
-                    </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleUseTargetBuildingAsPlot}
+                      className="flex-1 py-1.5 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                    >
+                      <Pencil className="w-3 h-3" />
+                      <span>ใช้รูปทรงนี้สร้างแปลงที่ดิน</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInteractionMode('draw')}
+                      className="py-1.5 px-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                    >
+                      <span>วาดแปลงเอง</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -695,24 +875,34 @@ export function App() {
                 <div className="w-5 h-5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
                 <div>
                   <div className="font-bold text-cyan-300">กำลังประมวลผล AI Vision Radar...</div>
-                  <div className="text-[11px] text-slate-400">ดาวน์โหลดภาพถ่ายดาวเทียมและรันโมเดล YOLOv8 best.pt</div>
+                  <div className="text-[11px] text-slate-400">สแกนอาคารเป้าหมาย (Polygon) และอาคารรอบข้าง 200 ม. (Bounding Box)</div>
                 </div>
               </div>
             ) : (
-              <div className="p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-800/50 text-xs text-cyan-200/90 flex items-start gap-2.5 shadow-sm">
-                <span className="text-base shrink-0 mt-0.5">🎯</span>
-                <span className="leading-relaxed">
-                  <strong>คลิกบนภาพถ่ายดาวเทียมเพื่อเริ่มสแกนเรดาร์:</strong> AI (YOLOv8 best.pt) จะตรวจจับสิ่งปลูกสร้างจุดที่เลือก คำนวณขนาดพื้นที่ ประเมินราคา และสแกนบ้านรอบข้างในรัศมี 200 เมตรทันที
-                </span>
+              <div className="p-3.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs text-slate-300 space-y-2 shadow-sm">
+                <div className="flex items-start gap-2 text-cyan-300">
+                  <span className="text-base shrink-0">🎯</span>
+                  <span className="leading-relaxed">
+                    <strong>เลือกรูปแบบการทำงาน:</strong>
+                  </span>
+                </div>
+                <ul className="space-y-1.5 pl-6 text-[11px] text-slate-400 list-disc">
+                  <li>
+                    <strong className="text-slate-200">โหมด AI Radar (200m):</strong> คลิกบนอาคารเพื่อดูรูปทรง <strong>Polygon</strong> อาคารเป้าหมาย และ <strong>Bounding Box</strong> อาคารรอบข้าง
+                  </li>
+                  <li>
+                    <strong className="text-slate-200">โหมดวาดแปลง (Draw):</strong> วาดรูปแปลงที่ดินบนแผนที่เพื่อนับ <strong>ตร.ม.</strong> และคำนวณมูลค่าราคาประเมินจริง
+                  </li>
+                </ul>
               </div>
             )}
           </div>
 
-          {/* AI Radar Scan 200m Section (YOLOv8 best.pt detections) */}
+          {/* AI Radar Scan 200m Section (Surrounding Buildings as Bounding Box) */}
           <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Radar className="w-4 h-4 text-cyan-400 animate-pulse" /> ผลการสแกนเรดาร์รอบข้าง (200m)
+                <Radar className="w-4 h-4 text-cyan-400 animate-pulse" /> ผลการสแกนเรดาร์รอบข้าง (200m - Bounding Box)
               </label>
               <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold border transition-colors ${
                 (visionResult || scannedBuildings !== null)
@@ -739,18 +929,21 @@ export function App() {
                 {visionResult.surrounding_buildings.length > 0 && (
                   <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold text-slate-400 flex items-center justify-between">
-                      <span>สิ่งปลูกสร้างใกล้เคียง (ตัวอย่าง 4 หลังแรก):</span>
+                      <span>สิ่งปลูกสร้างใกล้เคียง (Bounding Box):</span>
                       <span className="text-[10px] text-cyan-400">สแกนครอบคลุม 200 ม.</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       {visionResult.surrounding_buildings.slice(0, 4).map((bld, idx) => (
                         <div key={idx} className="bg-slate-900/60 p-2 rounded-lg border border-slate-800 text-[11px]">
                           <div className="text-cyan-400 font-bold flex items-center justify-between">
-                            <span>{bld.id}</span>
+                            <span>📦 {bld.id}</span>
                             <span className="text-[10px] text-slate-400">ห่าง {bld.distance_m} ม.</span>
                           </div>
                           <div className="text-slate-300 text-[10px] mt-0.5">
-                            ขนาด: <strong>{bld.area_sqm} ตร.ม.</strong> ({bld.area_wah} ตร.ว.)
+                            มิติ: <strong>{bld.width_m} × {bld.length_m} ม.</strong>
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            (~{bld.area_sqm} ตร.ม.)
                           </div>
                         </div>
                       ))}
@@ -760,7 +953,7 @@ export function App() {
               </div>
             ) : (
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                สแกนภาพถ่ายดาวเทียมความละเอียดสูงด้วย YOLOv8 (best.pt) ในรัศมี 200 เมตร พร้อมวาดรูปแปลง Polygon สิ่งปลูกสร้างสีฟ้าเรืองแสงบนแผนที่
+                สแกนภาพถ่ายดาวเทียมความละเอียดสูงด้วย YOLOv8 (best.pt) ในรัศมี 200 เมตร แสดงอาคารรอบข้างเป็น Bounding Box (กรอบสี่เหลี่ยมสีฟ้า) เพื่อวิเคราะห์ความหนาแน่น
               </p>
             )}
           </div>
@@ -851,8 +1044,91 @@ export function App() {
             )}
           </div>
 
+          {/* AI Model Selection Card for Land Valuation (XGBoost vs ARIMAX) */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Cpu className="w-4 h-4 text-cyan-400" /> โมเดลประเมินราคาที่ดิน (Algorithm)
+              </label>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-white/10">
+                {selectedModel === 'xgboost'
+                  ? 'R² 0.968 (Spatial ML)'
+                  : 'AIC 230.7 (Time-Series)'}
+              </span>
+            </div>
+
+            {/* Model Selection 2 Columns */}
+            <div className="grid grid-cols-2 gap-2.5">
+              {[
+                {
+                  id: 'xgboost',
+                  name: 'XGBoost Regressor',
+                  badge: 'Spatial ML',
+                  metric: 'R² 0.968',
+                  desc: 'วิเคราะห์เชิงพื้นที่ 17 ปัจจัย + รัศมีอาคาร 200 ม.',
+                  tag: 'เหมาะกับแปลงเจาะจง & ซื้อขาย',
+                  activeColor: 'border-cyan-500/80 bg-cyan-950/40 text-cyan-300 ring-1 ring-cyan-500/30'
+                },
+                {
+                  id: 'arimax',
+                  name: 'ARIMAX (1,1,0)',
+                  badge: 'Econometrics',
+                  metric: 'AIC 230.7',
+                  desc: 'วิเคราะห์อนุกรมเวลา 17 ปี + อัตราเงินเฟ้อ',
+                  tag: 'เหมาะกับวางแผนระยะยาว & ลงทุน',
+                  activeColor: 'border-emerald-500/80 bg-emerald-950/40 text-emerald-300 ring-1 ring-emerald-500/30'
+                },
+              ].map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setSelectedModel(m.id as any)}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                    selectedModel === m.id
+                      ? `${m.activeColor} shadow-md`
+                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-xs font-bold text-white truncate">{m.name}</span>
+                      <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0 font-semibold ${
+                        selectedModel === m.id ? 'bg-white/15 text-white' : 'bg-slate-800 text-slate-400'
+                      }`}>
+                        {m.metric}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-slate-300 leading-snug">{m.desc}</div>
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between text-[9px]">
+                    <span className="text-slate-400">{m.tag}</span>
+                    <span className={`px-1.5 py-0.2 rounded font-mono ${
+                      selectedModel === m.id ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500'
+                    }`}>
+                      {m.badge}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {/* Checkbox: Force ML Model */}
+            <label className="flex items-start gap-2 pt-1 text-xs text-slate-300 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={forceModel}
+                onChange={(e) => setForceModel(e.target.checked)}
+                className="mt-0.5 w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-cyan-600 focus:ring-0 cursor-pointer"
+              />
+              <span className="text-[11px] text-slate-400 leading-tight">
+                บังคับใช้โมเดลเพื่อตรวจสอบและวัดความคลาดเคลื่อน (Residual Error) เทียบกับราคาจริงกรมธนารักษ์
+              </span>
+            </label>
+          </div>
+
           {/* Prediction Horizon Slider (1-5 Years) */}
           <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
+
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5 text-blue-400" /> ระยะเวลาคาดการณ์ราคา
@@ -1014,23 +1290,109 @@ export function App() {
 
                   {/* Multi-Year Timeline pills if available */}
                   {jobResult.price_prediction.details_json?.forecast_timeline && (
-                    <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800/80 space-y-1.5">
-                      <div className="text-[10px] text-slate-400 font-medium">ไทม์ไลน์คาดการณ์การเติบโตรายปี:</div>
+                    <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-medium">
+                        <span>ไทม์ไลน์คาดการณ์ราคาอนาคต ({jobResult.price_prediction.details_json?.selected_model?.toUpperCase() || 'ML'}):</span>
+                        <span className="text-[9px] text-cyan-400 font-mono">
+                          {jobResult.price_prediction.details_json?.selected_model === 'arimax' ? '95% CI Bands' : '±MAE Bounds'}
+                        </span>
+                      </div>
                       <div className="grid grid-cols-4 gap-1 text-center">
                         {jobResult.price_prediction.details_json.forecast_timeline.slice(0, 4).map((f: any) => (
-                          <div key={f.calendar_year} className={`p-1 rounded text-[9px] ${
+                          <div key={f.calendar_year} className={`p-1.5 rounded text-[9px] transition-all ${
                             f.year_offset === predictionYears
-                              ? 'bg-blue-600/30 text-blue-200 border border-blue-500/50 font-bold'
+                              ? 'bg-blue-600/30 text-blue-200 border border-blue-500/50 font-bold shadow-sm'
                               : 'bg-slate-800/40 text-slate-400'
                           }`}>
-                            <div>{f.calendar_year}</div>
-                            <div className="font-mono mt-0.5">฿{Math.round(f.price_per_sqm / 1000)}k</div>
+                            <div className="text-[10px] font-semibold">{f.calendar_year}</div>
+                            <div className="font-mono mt-0.5 text-white">฿{Math.round(f.price_per_sqm / 1000)}k</div>
                             {f.growth_pct > 0 && (
-                              <div className="text-emerald-400 text-[8px]">+{f.growth_pct}%</div>
+                              <div className="text-emerald-400 text-[8.5px] font-semibold">+{f.growth_pct}%</div>
+                            )}
+                            {f.lower_bound_wah && f.upper_bound_wah && f.lower_bound_wah !== f.upper_bound_wah && (
+                              <div className="text-[7.5px] text-slate-400/80 mt-0.5 font-mono truncate" title={`ช่วงความเชื่อมั่น: ฿${f.lower_bound_wah.toLocaleString()} - ฿${f.upper_bound_wah.toLocaleString()}`}>
+                                ±{Math.round((f.upper_bound_wah - f.price_per_wah) / 1000)}k
+                              </div>
                             )}
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Multi-Model Inspection & Variance Table */}
+                  {jobResult.price_prediction.details_json?.model_comparisons && (
+                    <div className="bg-slate-900/90 rounded-xl border border-slate-800 p-3 space-y-2">
+                      <div 
+                        onClick={() => setShowModelComparison(!showModelComparison)}
+                        className="flex items-center justify-between cursor-pointer select-none py-0.5"
+                      >
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
+                          <BarChart3 className="w-3.5 h-3.5" />
+                          <span>เปรียบเทียบ 2 โมเดล (XGBoost vs ARIMAX)</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
+                          <span>{showModelComparison ? 'ซ่อน' : 'แสดงตาราง'}</span>
+                          {showModelComparison ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        </div>
+                      </div>
+
+                      {showModelComparison && (
+                        <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
+                          <div className="grid grid-cols-4 text-[10px] font-semibold text-slate-400 pb-1 px-1">
+                            <div>โมเดล</div>
+                            <div className="text-right">ราคา/ตร.ว.</div>
+                            <div className="text-right">ตัวชี้วัด</div>
+                            <div className="text-right">ส่วนต่าง</div>
+                          </div>
+
+                          {Object.values(jobResult.price_prediction.details_json.model_comparisons).map((m: any) => {
+                            const isCurrentSelected = jobResult.price_prediction?.details_json?.selected_model === m.id || 
+                              (m.id === 'xgboost' && (!jobResult.price_prediction?.details_json?.selected_model || jobResult.price_prediction?.details_json?.selected_model === 'xgboost'));
+                            return (
+                              <div 
+                                key={m.id}
+                                className={`grid grid-cols-4 items-center text-[10px] p-2 rounded transition-colors ${
+                                  isCurrentSelected ? 'bg-cyan-950/40 border border-cyan-800/60 font-semibold' : 'hover:bg-slate-800/40'
+                                }`}
+                              >
+                                <div className="truncate text-slate-200" title={m.name}>
+                                  <div className="font-semibold text-white">{m.short_name || m.name}</div>
+                                  <div className="text-[9px] text-slate-400 truncate">{m.model_type || m.tag}</div>
+                                </div>
+                                <div className="text-right font-mono text-amber-300 font-bold">
+                                  ฿{m.price_per_wah?.toLocaleString()}
+                                </div>
+                                <div className="text-right font-mono text-slate-300 text-[9.5px]">
+                                  {m.metric_value || m.r2}
+                                </div>
+                                <div className="text-right font-mono">
+                                  {m.diff_from_xgboost_pct === 0 || m.diff_from_ensemble_pct === 0 ? (
+                                    <span className="text-slate-500">ฐาน (0%)</span>
+                                  ) : (m.diff_from_xgboost_pct ?? m.diff_from_ensemble_pct) > 0 ? (
+                                    <span className="text-rose-400">+{(m.diff_from_xgboost_pct ?? m.diff_from_ensemble_pct)}%</span>
+                                  ) : (
+                                    <span className="text-emerald-400">{(m.diff_from_xgboost_pct ?? m.diff_from_ensemble_pct)}%</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {/* Official ground truth residual comparison if available */}
+                          {jobResult.price_prediction.details_json?.official_ground_truth && (
+                            <div className="mt-2 p-2 bg-emerald-950/40 border border-emerald-800/60 rounded-lg text-[10px] text-emerald-300 space-y-0.5">
+                              <div className="font-semibold flex items-center justify-between">
+                                <span>🎯 เทียบราคาจริงกรมธนารักษ์ (Residual):</span>
+                                <span className="font-mono">฿{jobResult.price_prediction.details_json.official_ground_truth.price_per_wah?.toLocaleString()} / ตร.ว.</span>
+                              </div>
+                              <div className="text-slate-300 text-[9px]">
+                                {jobResult.price_prediction.details_json.official_ground_truth.note} (แปลง {jobResult.price_prediction.details_json.official_ground_truth.parcel_id})
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1040,11 +1402,6 @@ export function App() {
                       {Math.round(jobResult.price_prediction.confidence_score * 100)}%
                     </span>
                   </div>
-
-                  {/* Human-in-the-loop (HITL) Micro-Feedback Widget */}
-                  {jobResult.status === 'completed' && activeJob?.job_id && (
-                    <FeedbackWidget jobId={activeJob.job_id} />
-                  )}
                 </div>
               )}
             </div>

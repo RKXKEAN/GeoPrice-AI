@@ -227,5 +227,171 @@ export const adminApi = {
   async getUserFeedbacks(): Promise<FeedbackApiResponse> {
     const res = await axios.get(`${API_BASE}/feedback`);
     return res.data;
+  },
+
+  async getDataSyncStatus(): Promise<DataSyncStatus> {
+    const res = await axios.get(`${API_BASE}/data-sync/status`);
+    return res.data;
+  },
+
+  async triggerDataSync(): Promise<{ status: string; message: string }> {
+    const res = await axios.post(`${API_BASE}/data-sync/trigger`);
+    return res.data;
+  },
+
+  async confirmDataSyncRetrain(epochs: number = 5): Promise<{ status: string; job_id: string; message: string }> {
+    const res = await axios.post(`${API_BASE}/data-sync/confirm-retrain`, { epochs });
+    return res.data;
+  },
+
+  async getLabelStudioStatus(): Promise<LabelStudioStatusResponse> {
+    const res = await axios.get(`${API_BASE}/label-studio/status`);
+    return res.data;
+  },
+
+  async getPendingTriggers(limit: number = 30): Promise<PendingTriggersResponse> {
+    const res = await axios.get(`${API_BASE}/triggers/pending`, { params: { limit } });
+    return res.data;
+  },
+
+  async correctAndRecalculateTrigger(
+    predictionId: number,
+    bboxes: any[],
+    targetBbox: { xmin: number; ymin: number; xmax: number; ymax: number }
+  ): Promise<{ status: string; message: string; recalculated_price: number; area_sqm: number; coordinates: number[][]; prediction_id: number; is_verified: boolean }> {
+    const res = await axios.post(`${API_BASE}/triggers/correct-and-recalculate`, {
+      prediction_id: predictionId,
+      bboxes,
+      target_bbox: targetBbox
+    });
+    return res.data;
+  },
+
+  async triggerVisionModelRetrain(datasetPeriod: string = '2026_07-12', epochs: number = 5): Promise<{ status: string; job_id: string; queue: string; message: string }> {
+    const res = await axios.post(`${API_BASE}/vision-model/trigger-retrain`, {
+      dataset_period: datasetPeriod,
+      epochs
+    });
+    return res.data;
+  },
+
+  async groundTruthMatch(datasetFilename: string = 'hatyai_appraisal_latest.csv', triggerRetrain: boolean = true): Promise<{
+    status: string;
+    message: string;
+    matched_count: number;
+    mean_mape: number;
+    retrain_enqueued: boolean;
+    job_id?: string;
+    queue?: string;
+  }> {
+    const res = await axios.post(`${API_BASE}/price-model/ground-truth-match`, {
+      dataset_filename: datasetFilename,
+      trigger_retrain: triggerRetrain
+    });
+    return res.data;
+  },
+
+  async getMultiStateRecords(limit: number = 50): Promise<MultiStateResponse> {
+    const res = await axios.get(`${API_BASE}/price-model/multi-state-records`, { params: { limit } });
+    return res.data;
+  },
+
+  async syncLabelStudio(folder: string = 'latest', limit: number = 1000): Promise<{ status: string; message: string; total_synced: number; project_id: number; project_url: string }> {
+    const res = await axios.post(`${API_BASE}/label-studio/sync`, { folder, limit });
+    return res.data;
   }
 };
+
+export interface UserTriggerItem {
+  id: number;
+  job_id: string;
+  plot_id: number;
+  plot_name: string;
+  latitude: number;
+  longitude: number;
+  raw_image_url: string;
+  preview_url: string | null;
+  initial_price: number;
+  initial_area_sqm: number;
+  surrounding_count: number;
+  initial_bboxes: any;
+  initial_polygons: any;
+  is_verified: boolean;
+  recalculated_price?: number;
+  recalculated_polygons?: any;
+  actual_market_price?: number;
+  error_metrics?: any;
+  created_at: string;
+}
+
+export interface PendingTriggersResponse {
+  status: string;
+  total_unverified: number;
+  triggers: UserTriggerItem[];
+}
+
+export interface MultiStateRecordItem {
+  id: number;
+  job_id: string;
+  plot_name: string;
+  latitude: number;
+  longitude: number;
+  raw_image_url: string;
+  initial_price: number;
+  initial_area_sqm: number;
+  is_verified: boolean;
+  recalculated_price?: number;
+  recalculated_area_sqm?: number;
+  actual_market_price?: number;
+  actual_recorded_at?: string;
+  error_metrics?: {
+    predicted_price: number;
+    actual_price: number;
+    diff_thb: number;
+    mape_percent: number;
+    matched_cadastral_source: string;
+    match_confidence: number;
+  };
+  created_at: string;
+}
+
+export interface MultiStateResponse {
+  status: string;
+  total: number;
+  records: MultiStateRecordItem[];
+}
+
+
+export interface DataSyncStatus {
+  status: 'idle' | 'ingesting' | 'auto_labeling' | 'syncing_label_studio' | 'ready_for_retrain' | 'retraining' | 'completed' | 'error';
+  progress_percent: number;
+  downloaded_count: number;
+  total_count: number;
+  speed_imgs_per_sec: number;
+  cycle_name: string;
+  target_folder: string;
+  overwrite_policy: string;
+  schedule_cadence: string;
+  next_scheduled_run: string;
+  last_completed_at?: string;
+  ready_for_retrain: boolean;
+  retrain_job_id?: string;
+  logs: string[];
+}
+
+export interface LabelStudioProjectInfo {
+  id: number;
+  title: string;
+  task_number: number;
+  finished_task_number: number;
+  created_at?: string;
+}
+
+export interface LabelStudioStatusResponse {
+  status: string;
+  url: string;
+  total_projects: number;
+  total_tasks: number;
+  projects: LabelStudioProjectInfo[];
+}
+

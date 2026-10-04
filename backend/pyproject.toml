@@ -17,5 +17,6 @@ dependencies = [
     "python-jose[cryptography]",
     "python-multipart",
     "email-validator",
-    "websockets"
+    "websockets",
+    "pillow"
 ]

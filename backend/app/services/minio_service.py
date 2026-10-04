@@ -96,12 +96,13 @@ class MinIOService:
             )
             return False
 
-    def list_objects(self, bucket_name: str, recursive: bool = True) -> List[Dict[str, Any]]:
+    def list_objects(self, bucket_name: str, prefix: str = "", recursive: bool = True) -> List[Dict[str, Any]]:
         """
-        Lists all objects in the specified MinIO bucket.
+        Lists objects in the specified MinIO bucket, optionally filtered by prefix.
         
         Args:
             bucket_name: Name of the target bucket (e.g. 'datasets', 'images')
+            prefix: Optional prefix string filter (e.g. 'latest/')
             recursive: Whether to list recursively through prefixes
             
         Returns:
@@ -113,7 +114,7 @@ class MinIOService:
                 logger.warning(f"Bucket '{bucket_name}' does not exist for listing.")
                 return []
 
-            objects = self.client.list_objects(bucket_name, recursive=recursive)
+            objects = self.client.list_objects(bucket_name, prefix=prefix, recursive=recursive)
             results = []
             for obj in objects:
                 results.append({

@@ -15,6 +15,8 @@ class PredictionRequest(BaseModel):
         example={"distance_to_bts_m": 350, "road_width_m": 12.0},
         description="Spatial attributes affecting valuation"
     )
+    selected_model: Optional[str] = Field("xgboost", example="xgboost", description="Selected model algorithm: xgboost (Spatial ML) or arimax (Econometric Time-Series)")
+    force_model: Optional[bool] = Field(False, example=False, description="Whether to force ML model evaluation even if near cadastral data for inspection")
 
 class PredictionResponse(BaseModel):
     job_id: str = Field(..., description="Unique UUID tracking the price prediction task")
@@ -33,7 +35,22 @@ class PricePredictionDetailResponse(BaseModel):
     details_json: Optional[Dict[str, Any]] = Field(None, description="Valuation factors and market comparables")
     created_at: datetime
 
+    # Multi-State Versioning Ecosystem
+    raw_image_url: Optional[str] = None
+    initial_bboxes: Optional[Any] = None
+    initial_polygons: Optional[Any] = None
+    initial_price_prediction: Optional[float] = None
+    target_prediction_year: Optional[int] = 2026
+    corrected_bboxes: Optional[Any] = None
+    recalculated_polygons: Optional[Any] = None
+    recalculated_price: Optional[float] = None
+    is_verified: Optional[bool] = False
+    actual_market_price: Optional[float] = None
+    actual_recorded_at: Optional[datetime] = None
+    error_metrics: Optional[Dict[str, Any]] = None
+
     model_config = {"from_attributes": True}
+
 
 class PredictionResultResponse(BaseModel):
     job_id: str

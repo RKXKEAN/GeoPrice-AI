@@ -15,5 +15,6 @@ dependencies = [
     "scipy",
     "scikit-learn",
     "xgboost",
-    "lightgbm"
+    "lightgbm",
+    "statsmodels"
 ]

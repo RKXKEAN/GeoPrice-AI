@@ -16,9 +16,47 @@ import {
 import L from 'leaflet';
 import type { Feature, Polygon } from 'geojson';
 import * as turf from '@turf/turf';
+import { Pencil, Square, Scissors, Trash2 } from 'lucide-react';
 import { EditControl } from './EditControl';
 import { fetchPOIsAround, type OverpassPOI } from '../services/overpass';
 import { scanVisionRadar, type RadarVisionResponse } from '../services/api';
+import { resolveZoneAppraisalRate } from '../services/zonePricing';
+
+// Configure Leaflet Draw Thai Localization
+if (typeof L !== 'undefined' && (L as any).drawLocal) {
+  (L as any).drawLocal.draw.toolbar.actions.title = 'ยกเลิกการวาด';
+  (L as any).drawLocal.draw.toolbar.actions.text = 'ยกเลิก';
+  (L as any).drawLocal.draw.toolbar.finish.title = 'เสร็จสิ้นการวาด';
+  (L as any).drawLocal.draw.toolbar.finish.text = 'เสร็จสิ้น';
+  (L as any).drawLocal.draw.toolbar.undo.title = 'ลบจุดสุดท้าย';
+  (L as any).drawLocal.draw.toolbar.undo.text = 'ย้อนกลับ';
+  (L as any).drawLocal.draw.toolbar.buttons.polygon = 'วาดแปลงที่ดินหลายเหลี่ยม (Polygon)';
+  (L as any).drawLocal.draw.toolbar.buttons.rectangle = 'วาดแปลงที่ดินสี่เหลี่ยม (Rectangle)';
+  (L as any).drawLocal.draw.handlers.polygon.tooltip.start = 'คลิกบนแผนที่เพื่อเริ่มปักมุมแรก';
+  (L as any).drawLocal.draw.handlers.polygon.tooltip.cont = 'คลิกเพื่อปักมุมถัดไป';
+  (L as any).drawLocal.draw.handlers.polygon.tooltip.end = 'คลิกจุดแรกหรือดับเบิลคลิกเพื่อปิดแปลง';
+  (L as any).drawLocal.draw.handlers.rectangle.tooltip.start = 'คลิกค้างแล้วลากเพื่อวาดแปลงสี่เหลี่ยม';
+  (L as any).drawLocal.edit.toolbar.buttons.edit = 'แก้ไขขอบเขตแปลง (ลากจุดมุม)';
+  (L as any).drawLocal.edit.toolbar.buttons.editDisabled = 'ไม่มีแปลงให้แก้ไข';
+  (L as any).drawLocal.edit.toolbar.buttons.remove = 'ลบแปลงที่ดิน';
+  (L as any).drawLocal.edit.toolbar.buttons.removeDisabled = 'ไม่มีแปลงให้ลบ';
+  (L as any).drawLocal.edit.handlers.edit.tooltip.text = 'ลากจุดมุมเพื่อปรับขนาดพื้นที่';
+  (L as any).drawLocal.edit.handlers.edit.tooltip.subtext = 'กด "บันทึก" เมื่อแก้ไขเสร็จสิ้น';
+}
+
+const formatThaiLandAreaStr = (sqm: number) => {
+  const rai = Math.floor(sqm / 1600);
+  const remainingAfterRai = sqm % 1600;
+  const ngan = Math.floor(remainingAfterRai / 400);
+  const remainingAfterNgan = remainingAfterRai % 400;
+  const wah = Math.round(((remainingAfterNgan / 4) * 10)) / 10;
+
+  const parts = [];
+  if (rai > 0) parts.push(`${rai} ไร่`);
+  if (ngan > 0) parts.push(`${ngan} งาน`);
+  if (wah > 0 || parts.length === 0) parts.push(`${wah} ตร.ว.`);
+  return parts.join(' ');
+};
 
 export interface DrawnPlotData {
   geometry: any;
@@ -175,10 +213,15 @@ const MapClickHandler = ({
   enabled: boolean; 
   onMapClick: (lat: number, lng: number) => void;
 }) => {
+  const onMapClickRef = useRef(onMapClick);
+  const enabledRef = useRef(enabled);
+  onMapClickRef.current = onMapClick;
+  enabledRef.current = enabled;
+
   useMapEvents({
     click(e) {
-      if (enabled) {
-        onMapClick(e.latlng.lat, e.latlng.lng);
+      if (enabledRef.current) {
+        onMapClickRef.current(e.latlng.lat, e.latlng.lng);
       }
     },
   });
@@ -216,20 +259,62 @@ export const MapComponent = ({
       });
   }, []);
 
-  // When plotData is cleared, reset visual states
+  // Sync plotData to featureGroupRef if layer is empty (e.g. converted from Target Building or re-mounted)
   useEffect(() => {
     if (!plotData) {
-      setRadarCircle(null);
-      setFlyTarget(null);
-      onVisionResult?.(null);
       if (featureGroupRef.current) {
         featureGroupRef.current.clearLayers();
       }
+      return;
     }
-  }, [plotData, onVisionResult]);
 
-  // Memoized GeoJSON for target building (detected by YOLOv8)
+    if (featureGroupRef.current && plotData.geometry) {
+      const existingLayers = featureGroupRef.current.getLayers();
+      if (existingLayers.length === 0) {
+        const thaiUnit = formatThaiLandAreaStr(plotData.areaSqm);
+        const pricing = resolveZoneAppraisalRate(plotData.latitude, plotData.longitude);
+        const geoLayer = L.geoJSON(plotData.geometry as any, {
+          style: {
+            color: '#00f2fe',
+            weight: 3,
+            fillColor: '#00f2fe',
+            fillOpacity: 0.25,
+            className: 'glowing-polygon-path',
+          },
+        });
+
+        geoLayer.eachLayer((subLayer: any) => {
+          subLayer.bindTooltip(
+            `<div style="text-align: center; padding: 2px 4px;">
+              <span style="color: #34d399; font-weight: 700; font-size: 13px;">📐 แปลงที่ดิน: ${plotData.areaSqm.toLocaleString()} ตร.ม.</span><br/>
+              <span style="color: #93c5fd; font-size: 11px; font-weight: 600;">(${thaiUnit})</span><br/>
+              <span style="color: #fbbf24; font-size: 10px;">฿${(plotData.priceRef || pricing.price_per_wah).toLocaleString()} / ตร.ว.</span>
+            </div>`,
+            { permanent: true, direction: 'center', className: 'drawn-plot-area-badge' }
+          ).openTooltip();
+
+          featureGroupRef.current?.addLayer(subLayer);
+        });
+      }
+    }
+  }, [plotData]);
+
+  useEffect(() => {
+    if (!plotData && !visionResult) {
+      setRadarCircle(null);
+      setFlyTarget(null);
+    } else if (plotData && visionResult) {
+      const circle = turf.circle([plotData.longitude, plotData.latitude], 0.2, { units: 'kilometers' });
+      setRadarCircle(circle);
+    } else if (plotData && !visionResult) {
+      setRadarCircle(null);
+    }
+  }, [plotData, visionResult]);
+
+  // Memoized GeoJSON for target building (detected by OpenCV / YOLOv8 - Architectural Polygon)
+  // ONLY rendered in Select Mode
   const targetGeoJSON = useMemo(() => {
+    if (interactionMode !== 'select') return null;
     if (!visionResult?.target_building?.coordinates) return null;
     return {
       type: 'Feature' as const,
@@ -239,9 +324,9 @@ export const MapComponent = ({
         coordinates: [visionResult.target_building.coordinates],
       },
     };
-  }, [visionResult]);
+  }, [visionResult, interactionMode]);
 
-  // Memoized GeoJSON for surrounding buildings (within 200m)
+  // Memoized GeoJSON for surrounding buildings (within 200m - Bounding Box)
   const surroundingGeoJSON = useMemo(() => {
     if (!visionResult?.surrounding_buildings?.length) return null;
     return {
@@ -258,9 +343,13 @@ export const MapComponent = ({
     };
   }, [visionResult]);
 
-  // Handle click on Map in Select / AI Radar Mode
+  // Handle click on Map in Select / AI Radar Mode (Target: Polygon, Surroundings: Bounding Box)
   const handleMapClick = useCallback(async (lat: number, lng: number) => {
     if (interactionMode !== 'select') return;
+
+    if (featureGroupRef.current) {
+      featureGroupRef.current.clearLayers();
+    }
 
     setIsVisionScanning?.(true);
 
@@ -269,34 +358,11 @@ export const MapComponent = ({
     setRadarCircle(circle);
     setFlyTarget([lat, lng]);
 
-    // Clear any manual drawn polygon
-    if (featureGroupRef.current) {
-      featureGroupRef.current.clearLayers();
-    }
-
     try {
       // Execute 200m YOLOv8 AI Vision inference
       const res = await scanVisionRadar(lat, lng, 200.0, 0.25);
       onVisionResult?.(res);
       onRadarScanned?.(res.radar_summary.total_buildings_detected);
-
-      if (res.target_building) {
-        const tb = res.target_building;
-        onPlotDrawn({
-          geometry: {
-            type: 'Polygon',
-            coordinates: [tb.coordinates],
-          },
-          latitude: tb.center[0],
-          longitude: tb.center[1],
-          areaSqm: tb.area_sqm,
-          priceRef: tb.price_per_wah,
-          plotName: tb.found
-            ? `อาคารเป้าหมาย (${tb.road_name})`
-            : `จุดตรวจสอบ (${tb.road_name})`,
-          source: 'select',
-        });
-      }
 
       // Dynamic POIs within 1000m
       setIsFetchingPOIs(true);
@@ -312,9 +378,9 @@ export const MapComponent = ({
     } finally {
       setIsVisionScanning?.(false);
     }
-  }, [interactionMode, setIsVisionScanning, onVisionResult, onRadarScanned, onPlotDrawn]);
+  }, [interactionMode, setIsVisionScanning, onVisionResult, onRadarScanned]);
 
-  // Handle newly created polygon or rectangle in manual Draw mode
+  // Handle newly created polygon or rectangle in manual Draw mode (Strictly calculates area from drawing)
   const handleCreated = useCallback((event: any) => {
     const layer = event.layer;
     if (featureGroupRef.current) {
@@ -327,28 +393,36 @@ export const MapComponent = ({
     const centroid = turf.centroid(geoJson);
     const [lng, lat] = centroid.geometry.coordinates;
 
-    const circle = turf.circle(centroid, 0.2, { units: 'kilometers' });
-    setRadarCircle(circle);
+    const calculatedAreaSqm = Math.round(area * 100) / 100;
+    const pricing = resolveZoneAppraisalRate(lat, lng);
+    const thaiUnit = formatThaiLandAreaStr(calculatedAreaSqm);
 
+    // Bind permanent on-map area badge directly to the drawn polygon
+    layer.bindTooltip(
+      `<div style="text-align: center; padding: 2px 4px;">
+        <span style="color: #34d399; font-weight: 700; font-size: 13px;">📐 แปลงที่ดิน: ${calculatedAreaSqm.toLocaleString()} ตร.ม.</span><br/>
+        <span style="color: #93c5fd; font-size: 11px; font-weight: 600;">(${thaiUnit})</span><br/>
+        <span style="color: #fbbf24; font-size: 10px;">฿${pricing.price_per_wah.toLocaleString()} / ตร.ว.</span>
+      </div>`,
+      { permanent: true, direction: 'center', className: 'drawn-plot-area-badge' }
+    ).openTooltip();
+
+    // Set plotData strictly from user drawing!
     onPlotDrawn({
       geometry: geoJson.geometry,
       latitude: parseFloat(lat.toFixed(6)),
       longitude: parseFloat(lng.toFixed(6)),
-      areaSqm: Math.round(area * 100) / 100,
+      areaSqm: calculatedAreaSqm,
+      priceRef: pricing.price_per_wah,
+      plotName: `แปลงที่ดิน ${pricing.road_name}`,
       source: 'draw',
     });
 
-    // Optionally scan vision around drawn plot centroid
-    setIsVisionScanning?.(true);
-    scanVisionRadar(lat, lng, 200.0, 0.25)
-      .then((res) => {
-        onVisionResult?.(res);
-        onRadarScanned?.(res.radar_summary.total_buildings_detected);
-      })
-      .catch((err) => console.warn('Radar scan around drawn shape:', err))
-      .finally(() => setIsVisionScanning?.(false));
+    // DO NOT invoke scanVisionRadar! Manual drawing is 100% user-authoritative.
+    // Clear any previous vision result so user's drawn shape is clean.
+    onVisionResult?.(null);
 
-  }, [onPlotDrawn, onVisionResult, onRadarScanned, setIsVisionScanning]);
+  }, [onPlotDrawn, onVisionResult]);
 
   // Handle edited shapes
   const handleEdited = useCallback((event: any) => {
@@ -359,11 +433,27 @@ export const MapComponent = ({
       const centroid = turf.centroid(geoJson);
       const [lng, lat] = centroid.geometry.coordinates;
 
+      const calculatedAreaSqm = Math.round(area * 100) / 100;
+      const pricing = resolveZoneAppraisalRate(lat, lng);
+      const thaiUnit = formatThaiLandAreaStr(calculatedAreaSqm);
+
+      layer.unbindTooltip();
+      layer.bindTooltip(
+        `<div style="text-align: center; padding: 2px 4px;">
+          <span style="color: #34d399; font-weight: 700; font-size: 13px;">📐 แปลงที่ดิน: ${calculatedAreaSqm.toLocaleString()} ตร.ม.</span><br/>
+          <span style="color: #93c5fd; font-size: 11px; font-weight: 600;">(${thaiUnit})</span><br/>
+          <span style="color: #fbbf24; font-size: 10px;">฿${pricing.price_per_wah.toLocaleString()} / ตร.ว.</span>
+        </div>`,
+        { permanent: true, direction: 'center', className: 'drawn-plot-area-badge' }
+      ).openTooltip();
+
       onPlotDrawn({
         geometry: geoJson.geometry,
         latitude: parseFloat(lat.toFixed(6)),
         longitude: parseFloat(lng.toFixed(6)),
-        areaSqm: Math.round(area * 100) / 100,
+        areaSqm: calculatedAreaSqm,
+        priceRef: pricing.price_per_wah,
+        plotName: `แปลงที่ดิน ${pricing.road_name} (แก้ไขแล้ว)`,
         source: 'draw',
       });
     });
@@ -371,29 +461,35 @@ export const MapComponent = ({
 
   // Handle deleted shapes
   const handleDeleted = useCallback(() => {
+    if (featureGroupRef.current) {
+      featureGroupRef.current.clearLayers();
+    }
+    setRadarCircle(null);
     onPlotCleared();
-  }, [onPlotCleared]);
+    onVisionResult?.(null);
+  }, [onPlotCleared, onVisionResult]);
+
 
   return (
     <div className="relative w-full h-full">
       {/* UI Hint Banner: Dynamic based on interactionMode and scanning state */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 backdrop-blur-md text-slate-200 px-4 py-2.5 rounded-xl text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center gap-2 max-w-xl text-center pointer-events-auto shadow-cyan-500/10">
         <span className="text-base shrink-0 animate-pulse">
-          {isVisionScanning ? '🛰️' : (interactionMode === 'select' ? '🎯' : '💡')}
+          {isVisionScanning ? '🛰️' : (interactionMode === 'select' ? '🎯' : '✏️')}
         </span>
         <span>
           {isVisionScanning ? (
             <span className="text-cyan-300 font-semibold flex items-center gap-2">
               <span className="w-2.5 h-2.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-              กำลังวิเคราะห์ภาพถ่ายดาวเทียมและตรวจจับอาคารด้วย AI (YOLOv8 best.pt)...
+              กำลังตรวจจับด้วย AI (อาคารเป้าหมาย: Polygon, รอบข้าง 200 ม.: Bounding Box)...
             </span>
           ) : interactionMode === 'select' ? (
             <>
-              <strong>โหมด AI Vision Radar (200m):</strong> คลิกที่อาคารหรือจุดใดก็ได้บนแผนที่ดาวเทียม เพื่อให้ AI ตรวจจับบ้าน ประเมินราคา และนับบ้านรอบข้าง 200 ม.
+              <strong>โหมดเลือก AI Radar (200m):</strong> คลิกบนหลังคาเพื่อดูรูปทรง <strong>Polygon</strong> อาคารเป้าหมาย และ <strong>Bounding Box</strong> อาคารรอบข้าง (สลับไปโหมดวาดเพื่อนับ ตร.ม. แปลงที่ดิน)
             </>
           ) : (
             <>
-              <strong>วิธีวาดแปลงที่ดิน:</strong> คลิกจุดตามมุมของที่ดินไปเรื่อยๆ (ไม่จำกัดจำนวนจุด) และ <strong>คลิกที่จุดเริ่มต้นอีกครั้ง</strong> เพื่อเสร็จสิ้นการวาด
+              <strong>โหมดวาดแปลงที่ดิน (Draw Tool):</strong> คลิกวาดตามขอบเขตที่ดินจริง (Polygon / Rectangle) เพื่อ <strong>นับ ตร.ม. ประเมินราคา</strong> โดยตรง
             </>
           )}
         </span>
@@ -408,7 +504,7 @@ export const MapComponent = ({
       >
         <MapResizer />
         <MapFlyTo center={flyTarget} />
-        <MapClickHandler enabled={interactionMode === 'select'} onMapClick={handleMapClick} />
+        <MapClickHandler key={`click-handler-${interactionMode}`} enabled={interactionMode === 'select'} onMapClick={handleMapClick} />
 
         {/* Layer Controls: Base layers and Overlays */}
         <LayersControl position="topright">
@@ -444,6 +540,7 @@ export const MapComponent = ({
             <LayerGroup>
               <GeoJSON
                 data={HAT_YAI_BOUNDARY_GEOJSON}
+                interactive={false}
                 style={{
                   color: '#00f2fe',
                   weight: 6,
@@ -453,6 +550,7 @@ export const MapComponent = ({
               />
               <GeoJSON
                 data={HAT_YAI_BOUNDARY_GEOJSON}
+                interactive={false}
                 style={{
                   color: '#ffffff',
                   weight: 2,
@@ -507,48 +605,73 @@ export const MapComponent = ({
           </LayersControl.Overlay>
         </LayersControl>
 
-        {/* 1. Surrounding Buildings Real Polygons (YOLOv8 best.pt 200m Radar) */}
+        {/* 1. Surrounding Buildings Bounding Box (YOLOv8 best.pt 200m Radar) */}
         {surroundingGeoJSON && (
           <GeoJSON
-            key={`surrounding-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}`}
+            key={`surrounding-${plotData?.latitude ?? visionResult?.target_building?.center?.[0]}-${plotData?.longitude ?? visionResult?.target_building?.center?.[1]}-${visionResult?.surrounding_buildings?.length}`}
             data={surroundingGeoJSON as any}
             style={{
               color: '#00f2fe',
               weight: 1.5,
               fillColor: '#0284c7',
-              fillOpacity: 0.25,
-              className: 'vision-surrounding-building',
+              fillOpacity: 0.18,
+              dashArray: '4, 4',
+              className: 'vision-surrounding-bbox',
             }}
             onEachFeature={(feature: any, layer: any) => {
               const p = feature.properties || {};
               layer.bindTooltip(`
                 <div style="font-family: system-ui, sans-serif; font-size: 11px; line-height: 1.4;">
-                  <div style="font-weight: 700; color: #38bdf8;">${p.id || 'สิ่งปลูกสร้าง'}</div>
-                  <div>ขนาด: <strong>${p.area_sqm} ตร.ม.</strong> (${p.area_wah} ตร.ว.)</div>
+                  <div style="font-weight: 700; color: #38bdf8;">📦 ${p.id || 'สิ่งปลูกสร้าง'} (Bounding Box)</div>
+                  <div>มิติ: <strong>${p.width_m} × ${p.length_m} ม.</strong> (~${p.area_sqm} ตร.ม.)</div>
                   <div>ห่าง: <strong>${p.distance_m} ม.</strong> | AI Conf: ${Math.round((p.confidence || 0) * 100)}%</div>
                 </div>
               `, { sticky: true, className: 'vision-building-tooltip' });
+
+              layer.on('click', (e: any) => {
+                if (interactionMode === 'select') {
+                  L.DomEvent.stopPropagation(e);
+                  handleMapClick(e.latlng.lat, e.latlng.lng);
+                }
+              });
             }}
           />
         )}
 
-        {/* 2. Target Building Footprint (Emerald Neon Glow) */}
-        {targetGeoJSON && (
+        {/* 2. Target Building Architectural Footprint (Emerald Neon Glow Polygon) - ONLY in Select Mode */}
+        {targetGeoJSON && interactionMode === 'select' && (
           <GeoJSON
-            key={`target-bld-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}`}
+            key={`target-bld-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}-${visionResult?.target_building?.area_sqm}`}
             data={targetGeoJSON as any}
             style={{
               color: '#10b981',
               weight: 3.5,
               fillColor: '#059669',
-              fillOpacity: 0.65,
-              className: 'vision-target-building',
+              fillOpacity: 0.60,
+              className: 'vision-target-building-polygon',
+            }}
+            onEachFeature={(feature: any, layer: any) => {
+              const p = feature.properties || {};
+              layer.bindTooltip(`
+                <div style="font-family: system-ui, sans-serif; font-size: 11px; line-height: 1.4;">
+                  <div style="font-weight: 700; color: #34d399;">🎯 อาคารเป้าหมาย (Polygon)</div>
+                  <div>มิติตัวอาคาร: <strong>${p.width_m} × ${p.length_m} ม.</strong> (${p.area_sqm} ตร.ม.)</div>
+                  <div>วิธี: ${p.method || 'OpenCV Vector Polygon'}</div>
+                </div>
+              `, { sticky: true });
+
+              layer.on('click', (e: any) => {
+                if (interactionMode === 'select') {
+                  L.DomEvent.stopPropagation(e);
+                  handleMapClick(e.latlng.lat, e.latlng.lng);
+                }
+              });
             }}
           />
         )}
 
-        {/* 3. Floating Target Pin & Detail Popup */}
-        {visionResult?.target_building && (
+        {/* 3. Floating Target Pin & Detail Popup - ONLY in Select Mode */}
+        {visionResult?.target_building && interactionMode === 'select' && (
           <Marker
             position={visionResult.target_building.center}
             icon={createTargetPinIcon()}
@@ -623,8 +746,9 @@ export const MapComponent = ({
         {/* 4. AI Radar Scan Circle (200m Radius) */}
         {radarCircle && (
           <GeoJSON
-            key={`radar-${plotData?.latitude}-${plotData?.longitude}`}
+            key={`radar-${plotData?.latitude ?? visionResult?.target_building?.center?.[0]}-${plotData?.longitude ?? visionResult?.target_building?.center?.[1]}`}
             data={radarCircle as any}
+            interactive={false}
             style={{
               color: '#00f2fe',
               dashArray: '5, 10',
@@ -664,7 +788,7 @@ export const MapComponent = ({
         <FeatureGroup ref={featureGroupRef}>
           {interactionMode === 'draw' && (
             <EditControl
-              position="topright"
+              position="topleft"
               onCreated={handleCreated}
               onEdited={handleEdited}
               onDeleted={handleDeleted}
@@ -700,11 +824,97 @@ export const MapComponent = ({
         </FeatureGroup>
       </MapContainer>
 
+      {/* Floating Draw Toolbar when in Draw Mode */}
+      {interactionMode === 'draw' && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-blue-500/40 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 max-w-[90vw] overflow-x-auto">
+          <div className="flex items-center gap-2 border-r border-slate-700/80 pr-3 shrink-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-xs font-bold text-white whitespace-nowrap">
+              โหมดวาดแปลงที่ดิน
+            </span>
+            {plotData && (
+              <span className="text-xs text-emerald-400 font-bold bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded-full font-mono whitespace-nowrap">
+                {plotData.areaSqm.toLocaleString()} ตร.ม.
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const btn = document.querySelector<HTMLElement>('.leaflet-draw-draw-polygon');
+                if (btn) btn.click();
+              }}
+              className="px-3 py-1.5 rounded-xl bg-blue-600/25 hover:bg-blue-600/40 text-blue-300 border border-blue-500/40 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer hover:scale-[1.02] shadow-sm whitespace-nowrap"
+              title="คลิกปักหมุดมุมแปลงหลายเหลี่ยม แล้วดับเบิลคลิกหรือคลิกจุดแรกเพื่อปิดรูป"
+            >
+              <Pencil className="w-3.5 h-3.5 text-blue-400" />
+              <span>วาดหลายเหลี่ยม</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const btn = document.querySelector<HTMLElement>('.leaflet-draw-draw-rectangle');
+                if (btn) btn.click();
+              }}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer hover:scale-[1.02] shadow-sm whitespace-nowrap"
+              title="คลิกค้างแล้วลากเพื่อวาดแปลงสี่เหลี่ยม"
+            >
+              <Square className="w-3.5 h-3.5 text-emerald-400" />
+              <span>วาดสี่เหลี่ยม</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const btn = document.querySelector<HTMLElement>('.leaflet-draw-edit-edit');
+                if (btn) btn.click();
+              }}
+              disabled={!plotData}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                plotData
+                  ? 'bg-amber-600/25 hover:bg-amber-600/40 text-amber-300 border-amber-500/40 cursor-pointer hover:scale-[1.02]'
+                  : 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed opacity-50'
+              }`}
+              title="ลากจุดมุมเพื่อปรับแต่งขอบเขตแปลง"
+            >
+              <Scissors className="w-3.5 h-3.5 text-amber-400" />
+              <span>ปรับแต่งมุม</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (featureGroupRef.current) {
+                  featureGroupRef.current.clearLayers();
+                }
+                setRadarCircle(null);
+                onPlotCleared();
+                onVisionResult?.(null);
+              }}
+              disabled={!plotData}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                plotData
+                  ? 'bg-rose-600/25 hover:bg-rose-600/40 text-rose-300 border-rose-500/40 cursor-pointer hover:scale-[1.02]'
+                  : 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed opacity-50'
+              }`}
+              title="ล้างแปลงที่ดินที่วาด"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>ล้างแปลง</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Map watermark / location tag */}
-      <div className="absolute bottom-6 left-6 z-[1000] bg-slate-900/80 backdrop-blur text-white px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-md border border-cyan-500/30 flex items-center gap-2">
+      <div className="absolute bottom-2 left-4 z-[1000] bg-slate-900/80 backdrop-blur text-white px-3 py-1 rounded-lg text-[11px] font-medium shadow-md border border-cyan-500/30 flex items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-sm shadow-cyan-400"></span>
-        <span>ระบบเรดาร์ AI: อ.หาดใหญ่ จ.สงขลา (รัศมี 200 ม. โมเดล best.pt)</span>
+        <span>ระบบประเมินราคาที่ดิน GeoPrice: อ.หาดใหญ่ จ.สงขลา</span>
       </div>
+
 
       {/* Loading badge for Overpass POIs */}
       {isFetchingPOIs && (

@@ -2,41 +2,59 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Save, 
   Trash2, 
-  RotateCcw, 
   CheckCircle2, 
   AlertCircle, 
   Loader2, 
-  ExternalLink,
-  PlusCircle,
-  Eye,
-  Sliders,
-  Layers,
-  FolderOpen,
-  ChevronLeft,
-  ChevronRight,
-  Bot,
-  Terminal,
-  Zap
+  ExternalLink, 
+  PlusCircle, 
+  Eye, 
+  FolderOpen, 
+  ChevronLeft, 
+  ChevronRight, 
+  Bot, 
+  Zap, 
+  Sparkles, 
+  Clock, 
+  RefreshCw,
+  Box,
+  MapPin
 } from 'lucide-react';
 import { adminApi } from '../services/adminApi';
-import type { PolygonPoint, FolderInfo } from '../services/adminApi';
+import type { PolygonPoint, FolderInfo, UserTriggerItem } from '../services/adminApi';
 
 interface QuickPolygonEditorProps {
   onNotification?: (msg: string, type: 'success' | 'error' | 'info') => void;
+  selectedTriggerId?: number | null;
+  onTriggerSelect?: (id: number | null) => void;
 }
 
-export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
-  // Folder & Images State
+export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
+  selectedTriggerId: propSelectedTriggerId,
+  onTriggerSelect
+}) => {
+  // Mode Selection: 'scheduled' (6-month MinIO folders) vs 'user_triggers' (User AOI Sessions)
+  const [dataMode, setDataMode] = useState<'user_triggers' | 'scheduled'>(
+    propSelectedTriggerId ? 'user_triggers' : 'user_triggers'
+  );
+
+  // User Trigger States
+  const [userTriggers, setUserTriggers] = useState<UserTriggerItem[]>([]);
+  const [selectedTrigger, setSelectedTrigger] = useState<UserTriggerItem | null>(null);
+  const [loadingTriggers, setLoadingTriggers] = useState(false);
+  const [recalculating, setRecalculating] = useState(false);
+  const [recalculateSuccess, setRecalculateSuccess] = useState<string | null>(null);
+
+  // Scheduled Folders & Images State
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string>('2026_07-12');
   const [availableImages, setAvailableImages] = useState<string[]>([]);
   const [selectedImage, setSelectedImage] = useState<string>('2026_07-12/img_0001.jpg');
 
-  // Polygon & Canvas State
+  // Polygon / BBox & Canvas State
   const [polygons, setPolygons] = useState<PolygonPoint[]>([]);
   const [selectedPolyId, setSelectedPolyId] = useState<number | null>(null);
   const [isHumanReviewed, setIsHumanReviewed] = useState(false);
-  const [confidence, setConfidence] = useState(0.25);
+  const confidence = 0.25;
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
@@ -44,28 +62,59 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newPolyPoints, setNewPolyPoints] = useState<[number, number][]>([]);
 
+  // Vision retrain trigger state
+  const [retrainingVision, setRetrainingVision] = useState(false);
+  const [retrainNotice, setRetrainNotice] = useState<string | null>(null);
+
   // Dragging vertex state
   const [draggingVertex, setDraggingVertex] = useState<{ polyId: number; pointIndex: number } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  // Batch Auto-Labeling State
-  const [batchRunning, setBatchRunning] = useState(false);
-  const [batchJobId, setBatchJobId] = useState<string | null>(null);
-  const [batchLogs, setBatchLogs] = useState<string[]>([]);
-  const [batchFinished, setBatchFinished] = useState(false);
-  const batchTerminalRef = useRef<HTMLDivElement | null>(null);
+  // 1. Load User Triggers (Pending HITL Review)
+  const loadUserTriggers = useCallback(async () => {
+    setLoadingTriggers(true);
+    try {
+      const res = await adminApi.getPendingTriggers(50);
+      setUserTriggers(res.triggers || []);
+      if (res.triggers && res.triggers.length > 0) {
+        if (propSelectedTriggerId) {
+          const match = res.triggers.find(t => t.id === propSelectedTriggerId);
+          if (match) setSelectedTrigger(match);
+          else setSelectedTrigger(res.triggers[0]);
+        } else if (!selectedTrigger) {
+          setSelectedTrigger(res.triggers[0]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load pending triggers:', err);
+    } finally {
+      setLoadingTriggers(false);
+    }
+  }, [propSelectedTriggerId, selectedTrigger]);
 
-  // 1. Load Folder List from MinIO dynamically
+  useEffect(() => {
+    loadUserTriggers();
+  }, [loadUserTriggers]);
+
+  // Sync prop changes
+  useEffect(() => {
+    if (propSelectedTriggerId && userTriggers.length > 0) {
+      const match = userTriggers.find(t => t.id === propSelectedTriggerId);
+      if (match) {
+        setDataMode('user_triggers');
+        setSelectedTrigger(match);
+      }
+    }
+  }, [propSelectedTriggerId, userTriggers]);
+
+  // 2. Load Folder List from MinIO dynamically
   const loadFolders = useCallback(async () => {
     try {
       const res = await adminApi.getLabelFolders();
       if (res.folders && res.folders.length > 0) {
         setFolders(res.folders);
-        // Default to newest non-all folder if possible
         const defaultF = res.folders.find(f => f.name === '2026_07-12') || res.folders[1] || res.folders[0];
-        if (defaultF) {
-          setSelectedFolder(defaultF.name);
-        }
+        if (defaultF) setSelectedFolder(defaultF.name);
       }
     } catch (err) {
       console.error('Failed to load folders:', err);
@@ -76,9 +125,9 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
     loadFolders();
   }, [loadFolders]);
 
-  // 2. Load Images inside Selected Folder
+  // 3. Load Images inside Selected Folder
   useEffect(() => {
-    if (!selectedFolder) return;
+    if (dataMode !== 'scheduled' || !selectedFolder) return;
     const targetQueryFolder = selectedFolder === 'all' ? '2026_07-12' : selectedFolder;
 
     adminApi.listLabelingImages(targetQueryFolder, 100)
@@ -89,9 +138,9 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
         }
       })
       .catch(err => console.error('Failed to list folder images:', err));
-  }, [selectedFolder]);
+  }, [selectedFolder, dataMode]);
 
-  // 3. Fetch Polygons for Selected Image
+  // 4. Fetch Polygons for Scheduled Images
   const fetchImagePolygons = useCallback(async (imgKey: string, conf: number) => {
     if (!imgKey) return;
     setLoading(true);
@@ -107,76 +156,80 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
       setIsHumanReviewed(!!data.is_human_reviewed);
     } catch (err: any) {
       console.error('Failed to load polygons:', err);
-      setErrorMsg('ไม่สามารถประมวลผลหรือโหลดเส้นรอบรูป Polygon จาก MinIO ได้');
+      setErrorMsg('ไม่สามารถโหลดเส้นรอบรูปจาก MinIO ได้');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (selectedImage) {
+    if (dataMode === 'scheduled' && selectedImage) {
       fetchImagePolygons(selectedImage, confidence);
     }
-  }, [selectedImage, fetchImagePolygons]);
+  }, [selectedImage, confidence, dataMode, fetchImagePolygons]);
 
-  // 4. Batch Auto-Labeling polling logs
+  // 5. Populate Canvas when a User Trigger is Selected
   useEffect(() => {
-    if (!batchJobId || batchFinished) return;
+    if (dataMode === 'user_triggers' && selectedTrigger) {
+      setSaveSuccessMsg(null);
+      setRecalculateSuccess(null);
+      setErrorMsg(null);
+      setIsAddingNew(false);
+      setNewPolyPoints([]);
 
-    const interval = setInterval(async () => {
-      try {
-        const logData = await adminApi.getJobLogs(batchJobId);
-        setBatchLogs(logData.logs || []);
-        if (logData.is_finished) {
-          setBatchFinished(true);
-          setBatchRunning(false);
-          loadFolders();
-          fetchImagePolygons(selectedImage, confidence);
-        }
-      } catch (err) {
-        console.error('Error polling batch logs:', err);
+      // Parse BBoxes from user trigger
+      const bboxesList: PolygonPoint[] = [];
+
+      // Target building (ID #1, highlighted)
+      if (selectedTrigger.initial_polygons && selectedTrigger.initial_polygons.coordinates) {
+        // Can convert target bounding envelope
+        bboxesList.push({
+          id: 1,
+          class_id: 0,
+          label: 'Target Building (อาคารเป้าหมาย)',
+          confidence: 1.0,
+          is_human_reviewed: selectedTrigger.is_verified,
+          points: [
+            [0.44, 0.44],
+            [0.56, 0.44],
+            [0.56, 0.56],
+            [0.44, 0.56],
+          ]
+        });
       }
-    }, 1200);
 
-    return () => clearInterval(interval);
-  }, [batchJobId, batchFinished, selectedImage, confidence, fetchImagePolygons, loadFolders]);
+      // Surrounding buildings
+      if (Array.isArray(selectedTrigger.initial_bboxes)) {
+        selectedTrigger.initial_bboxes.slice(0, 15).forEach((b: any, idx: number) => {
+          // Approximate normalized coordinates around center
+          const angle = (idx / 15) * 2 * Math.PI;
+          const r = 0.25 + (idx % 3) * 0.08;
+          const cx = Math.max(0.1, Math.min(0.9, 0.5 + Math.cos(angle) * r));
+          const cy = Math.max(0.1, Math.min(0.9, 0.5 + Math.sin(angle) * r));
+          const hw = 0.04;
+          const hh = 0.04;
 
-  useEffect(() => {
-    if (batchTerminalRef.current) {
-      batchTerminalRef.current.scrollTop = batchTerminalRef.current.scrollHeight;
+          bboxesList.push({
+            id: idx + 2,
+            class_id: 0,
+            label: b.id || `Building #${idx + 2}`,
+            confidence: b.confidence || 0.75,
+            is_human_reviewed: false,
+            points: [
+              [cx - hw, cy - hh],
+              [cx + hw, cy - hh],
+              [cx + hw, cy + hh],
+              [cx - hw, cy + hh]
+            ]
+          });
+        });
+      }
+
+      setPolygons(bboxesList);
+      setSelectedPolyId(1);
+      setIsHumanReviewed(selectedTrigger.is_verified);
     }
-  }, [batchLogs]);
-
-  // Trigger Batch Auto Labeling for folder or all
-  const handleTriggerBatchAutoLabel = async (targetFolder: string) => {
-    setBatchRunning(true);
-    setBatchFinished(false);
-    setBatchLogs([`[Init] กำลังส่งคำสั่ง Batch AI Auto-Labeling (${targetFolder}) ไปยัง GPU Worker...`]);
-
-    try {
-      const res = await adminApi.triggerBatchAutoLabel(targetFolder, 0.35);
-      setBatchJobId(res.job_id);
-    } catch (err: any) {
-      console.error('Failed to trigger batch auto label:', err);
-      setBatchRunning(false);
-      setBatchLogs(prev => [...prev, `[Error] ${err?.message || 'ส่งคำสั่งล้มเหลว'}`]);
-    }
-  };
-
-  // Navigate Previous / Next Image
-  const handlePrevImage = () => {
-    const curIdx = availableImages.indexOf(selectedImage);
-    if (curIdx > 0) {
-      setSelectedImage(availableImages[curIdx - 1]);
-    }
-  };
-
-  const handleNextImage = () => {
-    const curIdx = availableImages.indexOf(selectedImage);
-    if (curIdx < availableImages.length - 1) {
-      setSelectedImage(availableImages[curIdx + 1]);
-    }
-  };
+  }, [selectedTrigger, dataMode]);
 
   // Convert SVG client coords to normalized (0.0 to 1.0)
   const getNormalizedCoords = (e: React.MouseEvent<SVGSVGElement>): [number, number] | null => {
@@ -187,7 +240,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
     return [Math.max(0, Math.min(1, x)), Math.max(0, Math.min(1, y))];
   };
 
-  // Dragging handlers
+  // Dragging vertex handlers
   const handleMouseDownVertex = (e: React.MouseEvent, polyId: number, pointIndex: number) => {
     e.stopPropagation();
     setDraggingVertex({ polyId, pointIndex });
@@ -201,7 +254,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
     setPolygons(prev => prev.map(poly => {
       if (poly.id !== draggingVertex.polyId) return poly;
       const newPts = [...poly.points];
-      newPts[draggingVertex.pointIndex] = [parseFloat(coords[0].toFixed(5)), parseFloat(coords[1].toFixed(5))];
+      newPts[draggingVertex.pointIndex] = [parseFloat(coords[0].toFixed(4)), parseFloat(coords[1].toFixed(4))];
       return {
         ...poly,
         points: newPts,
@@ -215,13 +268,13 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
     setDraggingVertex(null);
   };
 
-  // Canvas click for adding new polygon
+  // Add new building box / polygon
   const handleSvgClick = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!isAddingNew) return;
     const coords = getNormalizedCoords(e);
     if (!coords) return;
 
-    const rounded: [number, number] = [parseFloat(coords[0].toFixed(5)), parseFloat(coords[1].toFixed(5))];
+    const rounded: [number, number] = [parseFloat(coords[0].toFixed(4)), parseFloat(coords[1].toFixed(4))];
     const updated = [...newPolyPoints, rounded];
 
     if (updated.length >= 4) {
@@ -229,7 +282,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
       const newPoly: PolygonPoint = {
         id: newId,
         class_id: 0,
-        label: 'building',
+        label: `building-${newId}`,
         confidence: 1.0,
         is_human_reviewed: true,
         points: updated
@@ -251,6 +304,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
     setIsHumanReviewed(true);
   };
 
+  // Save Scheduled labels to MinIO
   const handleSaveToMinio = async () => {
     setSaving(true);
     setSaveSuccessMsg(null);
@@ -269,26 +323,192 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
     }
   };
 
-  const currentFolderMeta = folders.find(f => f.name === selectedFolder);
-  const previewImageUrl = `/api/v1/admin/minio/preview?bucket=images&object_name=${encodeURIComponent(selectedImage)}`;
+  // 7. HITL RECALCULATE & APPROVE (STATE 2)
+  const handleRecalculateAndApprove = async () => {
+    if (!selectedTrigger) return;
+    setRecalculating(true);
+    setRecalculateSuccess(null);
+    setErrorMsg(null);
+
+    try {
+      // Find target building (ID #1 or selected)
+      const targetPoly = polygons.find(p => p.id === 1) || polygons[0];
+      const pts = targetPoly?.points || [[0.44, 0.44], [0.56, 0.44], [0.56, 0.56], [0.44, 0.56]];
+      const xs = pts.map(p => p[0]);
+      const ys = pts.map(p => p[1]);
+
+      const targetBbox = {
+        xmin: Math.min(...xs),
+        ymin: Math.min(...ys),
+        xmax: Math.max(...xs),
+        ymax: Math.max(...ys)
+      };
+
+      const bboxesPayload = polygons.map(p => {
+        const pxs = p.points.map(pt => pt[0]);
+        const pys = p.points.map(pt => pt[1]);
+        return {
+          id: p.id,
+          class_id: p.class_id || 0,
+          xmin: Math.min(...pxs),
+          ymin: Math.min(...pys),
+          xmax: Math.max(...pxs),
+          ymax: Math.max(...pys)
+        };
+      });
+
+      const res = await adminApi.correctAndRecalculateTrigger(selectedTrigger.id, bboxesPayload, targetBbox);
+      setRecalculateSuccess(`✅ ${res.message}`);
+      setIsHumanReviewed(true);
+
+      // Update local trigger state
+      setSelectedTrigger(prev => prev ? {
+        ...prev,
+        recalculated_price: res.recalculated_price,
+        is_verified: true
+      } : null);
+
+      loadUserTriggers();
+    } catch (err: any) {
+      console.error('Failed to recalculate trigger:', err);
+      setErrorMsg(`เกิดข้อผิดพลาดในการคำนวณราคาใหม่: ${err?.response?.data?.detail || err.message}`);
+    } finally {
+      setRecalculating(false);
+    }
+  };
+
+  // 8. TRIGGER DUAL-SOURCE VISION RETRAINING
+  const handleTriggerVisionRetrain = async () => {
+    setRetrainingVision(true);
+    setRetrainNotice(null);
+    try {
+      const res = await adminApi.triggerVisionModelRetrain('2026_07-12', 5);
+      setRetrainNotice(res.message);
+    } catch (err: any) {
+      setRetrainNotice(`เกิดข้อผิดพลาด: ${err?.response?.data?.detail || err.message}`);
+    } finally {
+      setRetrainingVision(false);
+    }
+  };
+
+  const previewImageUrl = dataMode === 'user_triggers' && selectedTrigger
+    ? `/api/v1/admin/minio/preview?bucket=images&object_name=${encodeURIComponent(selectedTrigger.raw_image_url || `user_triggers/${selectedTrigger.job_id}.jpg`)}`
+    : `/api/v1/admin/minio/preview?bucket=images&object_name=${encodeURIComponent(selectedImage)}`;
 
   return (
     <div className="space-y-6 font-sans">
-      {/* Top Controls: Folder Selector + Image Navigation + Batch Auto-Label Triggers */}
-      <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">
-        {/* Row 1: Folder & Image Pickers */}
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Level 1: Folder Selector */}
-            <div className="flex items-center gap-2">
-              <FolderOpen className="w-5 h-5 text-amber-400" />
+      {/* Mode Switcher Banner: User AOI Triggers vs Scheduled MinIO Folders */}
+      <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800 shadow-xl flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <button
+              onClick={() => {
+                setDataMode('user_triggers');
+                loadUserTriggers();
+              }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                dataMode === 'user_triggers'
+                  ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>ข้อมูลจริงจากผู้ใช้ (User AOI Triggers)</span>
+              {userTriggers.filter(t => !t.is_verified).length > 0 && (
+                <span className="bg-rose-500 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold animate-pulse">
+                  {userTriggers.filter(t => !t.is_verified).length}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setDataMode('scheduled')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                dataMode === 'scheduled'
+                  ? 'bg-cyan-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span>ภาพถ่ายตามรอบ 6 เดือน (Scheduled Imagery)</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Grace Period & Auto-Proceed Policy Notice */}
+        <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+          <Clock className="w-3.5 h-3.5 text-amber-400" />
+          <span className="text-slate-300">Grace Period Auto-Proceed:</span>
+          <span className="text-emerald-400 font-semibold">24 ชั่วโมง</span>
+        </div>
+      </div>
+
+      {/* Mode Controls Bar */}
+      {dataMode === 'user_triggers' ? (
+        /* User Trigger Picker Strip */
+        <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800 shadow-xl space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="text-xs font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <MapPin className="w-4 h-4" /> เลือกรายการประเมิน (Session):
+              </label>
+
+              <select
+                value={selectedTrigger?.id || ''}
+                onChange={(e) => {
+                  const found = userTriggers.find(t => t.id === parseInt(e.target.value));
+                  if (found) {
+                    setSelectedTrigger(found);
+                    onTriggerSelect?.(found.id);
+                  }
+                }}
+                disabled={loadingTriggers}
+                className="bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-mono focus:outline-none focus:border-amber-500 font-semibold max-w-[340px]"
+              >
+                {userTriggers.map(t => (
+                  <option key={t.id} value={t.id}>
+                    #{t.id} — {t.plot_name || `AOI (${t.latitude.toFixed(3)}, ${t.longitude.toFixed(3)})`} [{t.is_verified ? '✅ Verified' : '⏳ Pending'}]
+                  </option>
+                ))}
+              </select>
+
+              <button
+                onClick={loadUserTriggers}
+                disabled={loadingTriggers}
+                className="flex items-center gap-1 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-all"
+                title="รีเฟรชรายการคำขอ"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingTriggers ? 'animate-spin' : ''}`} />
+                รีเฟรช
+              </button>
+            </div>
+
+            {/* Quick Summary Pill */}
+            {selectedTrigger && (
+              <div className="flex items-center gap-3 text-xs">
+                <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
+                  พิกัด: <span className="font-mono text-cyan-400 font-semibold">{selectedTrigger.latitude.toFixed(4)}, {selectedTrigger.longitude.toFixed(4)}</span>
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
+                  ราคาเดิม: <span className="font-mono text-emerald-400 font-bold">฿{Math.round(selectedTrigger.initial_price).toLocaleString()}</span>
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* Scheduled Folders Controls */
+        <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800 shadow-xl space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <FolderOpen className="w-5 h-5 text-cyan-400" />
               <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
                 โฟลเดอร์ภาพถ่าย (MinIO):
               </label>
               <select
                 value={selectedFolder}
                 onChange={(e) => setSelectedFolder(e.target.value)}
-                disabled={loading || batchRunning}
+                disabled={loading}
                 className="bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-mono focus:outline-none focus:border-cyan-500 font-semibold"
               >
                 {folders.map(f => (
@@ -297,200 +517,92 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
                   </option>
                 ))}
               </select>
-            </div>
 
-            {/* Level 2: Image in Folder Picker */}
-            <div className="flex items-center gap-1.5 bg-slate-950 px-2 py-1 rounded-xl border border-slate-800">
-              <button
-                type="button"
-                onClick={handlePrevImage}
-                disabled={loading || availableImages.indexOf(selectedImage) <= 0}
-                className="p-1 rounded hover:bg-slate-800 text-slate-300 disabled:opacity-30"
-                title="รูปก่อนหน้า"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1.5 bg-slate-950 px-2 py-1 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const idx = availableImages.indexOf(selectedImage);
+                    if (idx > 0) setSelectedImage(availableImages[idx - 1]);
+                  }}
+                  disabled={loading || availableImages.indexOf(selectedImage) <= 0}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-300 disabled:opacity-30"
+                  title="รูปก่อนหน้า"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
 
-              <select
-                value={selectedImage}
-                onChange={(e) => setSelectedImage(e.target.value)}
-                disabled={loading}
-                className="bg-transparent border-none text-slate-200 text-xs py-1 font-mono focus:outline-none max-w-[200px]"
-              >
-                {availableImages.map(img => (
-                  <option key={img} value={img} className="bg-slate-900 text-slate-100">
-                    {img.split('/').pop()}
-                  </option>
-                ))}
-              </select>
+                <select
+                  value={selectedImage}
+                  onChange={(e) => setSelectedImage(e.target.value)}
+                  disabled={loading}
+                  className="bg-transparent border-none text-slate-200 text-xs py-1 font-mono focus:outline-none max-w-[200px]"
+                >
+                  {availableImages.map(img => (
+                    <option key={img} value={img} className="bg-slate-900 text-slate-100">
+                      {img.split('/').pop()}
+                    </option>
+                  ))}
+                </select>
 
-              <button
-                type="button"
-                onClick={handleNextImage}
-                disabled={loading || availableImages.indexOf(selectedImage) >= availableImages.length - 1}
-                className="p-1 rounded hover:bg-slate-800 text-slate-300 disabled:opacity-30"
-                title="รูปถัดไป"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
-
-            <button
-              onClick={() => fetchImagePolygons(selectedImage, confidence)}
-              disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-all"
-              title="รีเซ็ตและประมวลผลใหม่จากโมเดล"
-            >
-              <RotateCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-              ประมวลผลใหม่
-            </button>
-          </div>
-
-          {/* Confidence Slider & Label Studio Link */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
-              <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-              <span>เกณฑ์ความเชื่อมั่น (Conf):</span>
-              <span className="font-mono text-cyan-400 font-semibold">{confidence.toFixed(2)}</span>
-            </div>
-            <input
-              type="range"
-              min="0.10"
-              max="0.70"
-              step="0.05"
-              value={confidence}
-              onChange={(e) => setConfidence(parseFloat(e.target.value))}
-              className="w-24 accent-cyan-500 cursor-pointer"
-            />
-
-            <a
-              href="http://localhost:8080"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold transition-all shadow-md"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              Label Studio (Port 8080)
-            </a>
-          </div>
-        </div>
-
-        {/* Row 2: Batch AI Auto-Labeling Action Bar */}
-        <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 text-slate-400">
-            <span className="text-slate-300 font-medium">ความคืบหน้าการ Label ในโฟลเดอร์นี้:</span>
-            <span className="text-cyan-400 font-mono font-bold">
-              {currentFolderMeta?.labeled_count || 0} / {currentFolderMeta?.total_images || 1000} ภาพ
-            </span>
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
-              {currentFolderMeta?.status || 'พร้อม Auto-Label'}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => handleTriggerBatchAutoLabel(selectedFolder)}
-              disabled={batchRunning}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-semibold text-xs shadow-md shadow-cyan-600/25 transition-all disabled:opacity-50"
-            >
-              <Bot className="w-3.5 h-3.5" />
-              สั่งรัน Auto-Label โฟลเดอร์ {selectedFolder} ({currentFolderMeta?.total_images || 1000} รูป)
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleTriggerBatchAutoLabel('all')}
-              disabled={batchRunning}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-semibold text-xs shadow-md shadow-amber-600/25 transition-all disabled:opacity-50"
-            >
-              <Zap className="w-3.5 h-3.5" />
-              ⚡ สั่งรัน Auto-Label ทั้งหมด 10,000 รูป (ทุกโฟลเดอร์ + อนาคต)
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Batch Processing Terminal Drawer (shown when running or has logs) */}
-      {batchLogs.length > 0 && (
-        <div className="bg-slate-950 rounded-2xl border border-slate-800 p-4 shadow-2xl font-mono text-xs">
-          <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
-            <div className="flex items-center gap-2 font-sans">
-              <Terminal className="w-4 h-4 text-cyan-400" />
-              <span className="font-semibold text-slate-200">
-                สถานะการรัน Batch AI Auto-Labeling บน GPU Worker
-              </span>
-              {batchRunning && (
-                <span className="flex items-center gap-1 text-[11px] text-amber-400 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 animate-pulse">
-                  <Loader2 className="w-3 h-3 animate-spin" /> กำลังประมวลผลบน RTX 5060...
-                </span>
-              )}
-              {batchFinished && (
-                <span className="text-[11px] text-emerald-400 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20">
-                  เสร็จสิ้น (Completed)
-                </span>
-              )}
-            </div>
-
-            <button
-              onClick={() => setBatchLogs([])}
-              className="text-[11px] text-slate-500 hover:text-slate-300 font-sans"
-            >
-              ปิดหน้าต่าง Log
-            </button>
-          </div>
-
-          <div
-            ref={batchTerminalRef}
-            className="h-36 overflow-y-auto space-y-1 text-slate-300 pr-2 select-text"
-          >
-            {batchLogs.map((log, index) => (
-              <div
-                key={index}
-                className={
-                  log.includes('🎉') || log.includes('✅')
-                    ? 'text-emerald-400 font-semibold'
-                    : log.includes('Error')
-                    ? 'text-rose-400'
-                    : log.includes('Progress')
-                    ? 'text-cyan-300'
-                    : 'text-slate-300'
-                }
-              >
-                {log}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const idx = availableImages.indexOf(selectedImage);
+                    if (idx < availableImages.length - 1) setSelectedImage(availableImages[idx + 1]);
+                  }}
+                  disabled={loading || availableImages.indexOf(selectedImage) >= availableImages.length - 1}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-300 disabled:opacity-30"
+                  title="รูปถัดไป"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
-            ))}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <a
+                href="http://localhost:8080"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold transition-all shadow-md"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Label Studio (Port 8080)
+              </a>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Editor Main Canvas & Sidebar */}
+      {/* Editor Main Canvas & Inspection Sidebar */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Left 3 Cols: SVG Interactive Canvas */}
         <div className="lg:col-span-3 bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-2xl flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-cyan-400" />
+              <Box className="w-4 h-4 text-cyan-400" />
               <h3 className="text-sm font-semibold text-slate-200">
-                Quick Polygon Reviewer & Vertex Editor
+                {dataMode === 'user_triggers' 
+                  ? 'HITL Bounding Box Editor & Target Contour Reviewer' 
+                  : 'Quick BBox & Polygon Reviewer'}
               </h3>
-              <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${
+              <span className={`text-[11px] px-2.5 py-0.5 rounded-full border font-medium ${
                 isHumanReviewed 
-                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' 
-                  : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
+                  : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
               }`}>
-                {isHumanReviewed ? '✏️ มีการแก้ไขโดยมนุษย์ (Human-Reviewed)' : '🤖 สกัดอัตโนมัติด้วย YOLOv8 (AI Detected)'}
+                {isHumanReviewed ? '✅ ตรวจสอบแล้ว (State 2: Verified)' : '⏳ รอการตรวจสอบ (State 1: Pending)'}
               </span>
             </div>
 
             <div className="text-xs text-slate-400 font-mono">
-              ภาพ: <span className="text-white font-bold">{selectedImage.split('/').pop()}</span> | ตรวจพบ: <span className="text-cyan-400 font-bold">{polygons.length}</span> หลัง
+              ตรวจพบ: <span className="text-cyan-400 font-bold">{polygons.length}</span> กรอบ BBox
             </div>
           </div>
 
           {/* Interactive Image & SVG Canvas */}
           <div className="relative w-full max-w-[640px] aspect-square mx-auto bg-slate-950 rounded-xl overflow-hidden border border-slate-800 shadow-2xl select-none">
-            {/* Background Satellite Image from MinIO */}
             <img
               src={previewImageUrl}
               alt="Satellite Tile"
@@ -510,29 +622,36 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
             >
               {polygons.map((poly) => {
                 const isSelected = poly.id === selectedPolyId;
+                const isTarget = poly.id === 1;
                 const pointsStr = poly.points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
 
                 return (
                   <g key={poly.id}>
                     <polygon
                       points={pointsStr}
-                      fill={isSelected ? 'rgba(16, 185, 129, 0.40)' : 'rgba(6, 182, 212, 0.22)'}
-                      stroke={isSelected ? '#10b981' : '#06b6d4'}
-                      strokeWidth={isSelected ? '0.004' : '0.0025'}
-                      className="transition-colors hover:fill-cyan-500/30 cursor-pointer"
+                      fill={
+                        isTarget 
+                          ? (isSelected ? 'rgba(16, 185, 129, 0.45)' : 'rgba(245, 158, 11, 0.35)')
+                          : (isSelected ? 'rgba(6, 182, 212, 0.40)' : 'rgba(6, 182, 212, 0.18)')
+                      }
+                      stroke={isTarget ? (isSelected ? '#10b981' : '#f59e0b') : (isSelected ? '#38bdf8' : '#06b6d4')}
+                      strokeWidth={isTarget ? (isSelected ? '0.005' : '0.004') : (isSelected ? '0.0035' : '0.002')}
+                      strokeDasharray={isTarget ? 'none' : '0.01, 0.004'}
+                      className="transition-colors cursor-pointer"
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedPolyId(poly.id);
                       }}
                     />
 
+                    {/* Corner / Vertex Dragging Handles */}
                     {isSelected && poly.points.map((pt, idx) => (
                       <circle
                         key={idx}
                         cx={pt[0]}
                         cy={pt[1]}
-                        r="0.012"
-                        fill="#10b981"
+                        r="0.014"
+                        fill={isTarget ? '#10b981' : '#06b6d4'}
                         stroke="#ffffff"
                         strokeWidth="0.002"
                         className="cursor-move hover:scale-125 transition-transform"
@@ -569,7 +688,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
             {loading && (
               <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-30">
                 <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-                <p className="text-xs text-slate-300 font-medium">กำลังรัน YOLOv8-Seg ตรวจจับอาคารบนภาพถ่าย...</p>
+                <p className="text-xs text-slate-300 font-medium">กำลังโหลดภาพและประมวลผลกรอบ BBox...</p>
               </div>
             )}
           </div>
@@ -590,7 +709,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
                 }`}
               >
                 <PlusCircle className="w-3.5 h-3.5" />
-                {isAddingNew ? `กำลังวาด... (คลิก 4 จุด: ${newPolyPoints.length}/4)` : 'เพิ่มอาคารใหม่ (Add Building)'}
+                {isAddingNew ? `กำลังวาด... (คลิก 4 มุม: ${newPolyPoints.length}/4)` : 'ตีกรอบอาคารใหม่ (+ Box)'}
               </button>
 
               {selectedPolyId !== null && (
@@ -600,30 +719,59 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
                   className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-medium transition-all"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  ลบอาคารที่เลือก (#{selectedPolyId})
+                  ลบกรอบที่เลือก (#{selectedPolyId})
                 </button>
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={handleSaveToMinio}
-              disabled={saving}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold shadow-lg shadow-emerald-600/25 transition-all disabled:opacity-50"
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  กำลังบันทึกไปยัง MinIO...
-                </>
-              ) : (
-                <>
-                  <Save className="w-4 h-4" />
-                  บันทึก Labels เข้า MinIO (YOLO Format)
-                </>
-              )}
-            </button>
+            {/* Action Button: Recalculate & Approve vs Save to MinIO */}
+            {dataMode === 'user_triggers' ? (
+              <button
+                type="button"
+                onClick={handleRecalculateAndApprove}
+                disabled={recalculating || !selectedTrigger}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-semibold shadow-lg shadow-emerald-600/25 transition-all disabled:opacity-50"
+              >
+                {recalculating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    กำลังคำนวณพื้นที่สุทธิ & ราคาใหม่...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-4 h-4" />
+                    คำนวณพื้นที่ใหม่ & อนุมัติ State 2 (Recalculate & Approve)
+                  </>
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSaveToMinio}
+                disabled={saving}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold shadow-lg shadow-emerald-600/25 transition-all disabled:opacity-50"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    กำลังบันทึกไปยัง MinIO...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    บันทึก Labels เข้า MinIO (YOLO Format)
+                  </>
+                )}
+              </button>
+            )}
           </div>
+
+          {recalculateSuccess && (
+            <div className="mt-3 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{recalculateSuccess}</span>
+            </div>
+          )}
 
           {saveSuccessMsg && (
             <div className="mt-3 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
@@ -640,42 +788,129 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
           )}
         </div>
 
-        {/* Right Col: Polygon Inspector & Guide */}
+        {/* Right Col: HITL Multi-State Comparison & Retrain Gate */}
         <div className="space-y-5">
+          {/* State Comparison Card (When in user_triggers mode) */}
+          {dataMode === 'user_triggers' && selectedTrigger && (
+            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-4">
+              <h4 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 border-b border-slate-800 pb-2">
+                <Sparkles className="w-4 h-4 text-amber-400" /> การเปรียบเทียบผลลัพธ์ Multi-State
+              </h4>
+
+              {/* State 1 */}
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-amber-400 font-semibold">State 1: ประเมินรอบแรก (Initial)</span>
+                  <span className="text-[10px] text-slate-500">AI YOLO + OpenCV</span>
+                </div>
+                <div className="flex items-baseline justify-between pt-1">
+                  <span className="text-xs text-slate-400">ราคาทำนายแรก:</span>
+                  <span className="text-sm font-mono font-bold text-slate-200">
+                    ฿{Math.round(selectedTrigger.initial_price).toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between text-xs text-slate-400">
+                  <span>พื้นที่หลังคา:</span>
+                  <span className="font-mono text-slate-300">{selectedTrigger.initial_area_sqm || 160} ตร.ม.</span>
+                </div>
+              </div>
+
+              {/* State 2 */}
+              <div className={`p-3 rounded-xl border space-y-1 transition-all ${
+                selectedTrigger.is_verified
+                  ? 'bg-emerald-500/10 border-emerald-500/30'
+                  : 'bg-slate-950/40 border-slate-800/60'
+              }`}>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-emerald-400 font-semibold">State 2: คำนวณซ้ำหลังตรวจแก้ (HITL)</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                    selectedTrigger.is_verified ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {selectedTrigger.is_verified ? 'Verified' : 'Pending'}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between pt-1">
+                  <span className="text-xs text-slate-400">ราคาที่คำนวณใหม่:</span>
+                  <span className="text-base font-mono font-bold text-emerald-400">
+                    {selectedTrigger.recalculated_price 
+                      ? `฿${Math.round(selectedTrigger.recalculated_price).toLocaleString()}` 
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Dual-Source Retraining Trigger Button */}
+              <div className="pt-2 border-t border-slate-800 space-y-2">
+                <button
+                  type="button"
+                  onClick={handleTriggerVisionRetrain}
+                  disabled={retrainingVision}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-semibold shadow-md transition-all disabled:opacity-50"
+                >
+                  {retrainingVision ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      กำลังส่งคำสั่ง Retrain...
+                    </>
+                  ) : (
+                    <>
+                      <Bot className="w-3.5 h-3.5" />
+                      อนุมัติ & สั่ง Retrain Vision Model (Dual-Source)
+                    </>
+                  )}
+                </button>
+
+                {retrainNotice && (
+                  <p className="text-[11px] text-cyan-300 bg-cyan-950/50 p-2 rounded-lg border border-cyan-800/50">
+                    {retrainNotice}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Active BBox Property Inspector */}
           <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl">
             <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <Eye className="w-4 h-4 text-cyan-400" /> ข้อมูลอาคารที่เลือก
+              <Eye className="w-4 h-4 text-cyan-400" /> ข้อมูลกรอบ BBox ที่เลือก
             </h4>
 
             {selectedPolyId !== null ? (
               (() => {
                 const target = polygons.find(p => p.id === selectedPolyId);
                 if (!target) return null;
+                const xs = target.points.map(pt => pt[0]);
+                const ys = target.points.map(pt => pt[1]);
+                const w = Math.max(...xs) - Math.min(...xs);
+                const h = Math.max(...ys) - Math.min(...ys);
+
                 return (
                   <div className="space-y-3 text-xs">
                     <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-slate-400">รหัสอาคาร (ID):</span>
-                      <span className="text-cyan-400 font-mono font-bold">#{target.id}</span>
+                      <span className="text-slate-400">ชื่อวัตถุ (Label):</span>
+                      <span className="text-cyan-400 font-mono font-bold">{target.label}</span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-slate-400">ประเภทวัตถุ (Class):</span>
-                      <span className="text-slate-200 font-mono">0 (building)</span>
+                      <span className="text-slate-400">Class YOLO:</span>
+                      <span className="text-slate-200 font-mono">0 (House / Building)</span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-slate-400">จำนวนจุดยอด (Vertices):</span>
-                      <span className="text-emerald-400 font-mono font-semibold">{target.points.length} จุด</span>
+                      <span className="text-slate-400">ขนาดกรอบ (W x H):</span>
+                      <span className="text-emerald-400 font-mono font-semibold">
+                        {(w * 100).toFixed(1)}% × {(h * 100).toFixed(1)}%
+                      </span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-slate-800">
                       <span className="text-slate-400">ความเชื่อมั่น (Conf):</span>
                       <span className="text-slate-200 font-mono">{(target.confidence * 100).toFixed(1)}%</span>
                     </div>
                     <div>
-                      <span className="text-slate-400 block mb-1">พิกัดจุดยอดรอบรูป (Norm 0-1):</span>
-                      <div className="max-h-36 overflow-y-auto bg-slate-950 p-2 rounded-lg font-mono text-[10px] text-slate-300 space-y-0.5 border border-slate-800">
+                      <span className="text-slate-400 block mb-1">พิกัด 4 มุม Bounding Box (Norm):</span>
+                      <div className="bg-slate-950 p-2 rounded-lg font-mono text-[10px] text-slate-300 space-y-0.5 border border-slate-800">
                         {target.points.map((pt, i) => (
                           <div key={i} className="flex justify-between">
-                            <span className="text-slate-500">P{i + 1}:</span>
-                            <span>x: {pt[0].toFixed(4)}, y: {pt[1].toFixed(4)}</span>
+                            <span className="text-slate-500">Corner {i + 1}:</span>
+                            <span>x: {pt[0].toFixed(3)}, y: {pt[1].toFixed(3)}</span>
                           </div>
                         ))}
                       </div>
@@ -685,18 +920,9 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = () => {
               })()
             ) : (
               <p className="text-xs text-slate-500 italic py-6 text-center">
-                คลิกเลือกรูปทรง Polygon บนภาพเพื่อดูรายละเอียดและลากปรับแต่งจุดยอด
+                คลิกเลือกกรอบสี่เหลี่ยม BBox บนภาพเพื่อลากปรับขนาดหรือตำแหน่ง
               </p>
             )}
-          </div>
-
-          <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-3 text-xs text-slate-300">
-            <h4 className="font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-              <Bot className="w-4 h-4 text-cyan-400" /> ระบบ Auto-Labeling 10,000 รูป
-            </h4>
-            <p className="text-slate-400 leading-relaxed">
-              ระบบเชื่อมต่อกับคลังภาพถ่ายดาวเทียมทุกช่วงเวลาใน MinIO ผู้ดูแลระบบสามารถเลือกโฟลเดอร์เพื่อรันโมเดล YOLOv8 Segmentation ในการสกัด Polygon Contours ทั้งหมด 10,000 รูปแบบอัตโนมัติ และผลลัพธ์จะถูกบันทึกเป็นไฟล์ Label มาตรฐานพร้อมสำหรับการ Retrain ในขั้นตอนถัดไป
-            </p>
           </div>
         </div>
       </div>

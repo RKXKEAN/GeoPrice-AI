@@ -19,11 +19,14 @@ export interface PredictionPayload {
   geometry: GeoJSONGeometry;
   area_size_sqm: number;
   land_use_zone?: string;
+  selected_model?: 'xgboost' | 'arimax';
+  force_model?: boolean;
   features?: {
     prediction_years?: number;
     [key: string]: any;
   };
 }
+
 
 export interface PredictionJobResponse {
   job_id: string;
@@ -90,6 +93,7 @@ export interface TargetBuildingData {
   found: boolean;
   id?: string;
   confidence: number;
+  shape_type?: 'polygon' | 'bbox';
   area_sqm: number;
   area_wah: number;
   width_m: number;
@@ -116,6 +120,7 @@ export interface TargetBuildingData {
 export interface SurroundingBuildingData {
   id: string;
   confidence: number;
+  shape_type?: 'polygon' | 'bbox';
   area_sqm: number;
   area_wah: number;
   width_m: number;

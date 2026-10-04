@@ -51,6 +51,8 @@ services:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - LABEL_STUDIO_URL=http://label_studio:8080
+      - LABEL_STUDIO_API_KEY=${LABEL_STUDIO_API_KEY}
     depends_on:
       - postgres
       - redis
@@ -77,10 +79,11 @@ services:
       - postgres
       - minio
 
-  ai_worker:
+  ai_worker_inference:
     build: 
       context: ./ai_worker
-    container_name: geoprice-ai-worker
+    container_name: geoprice-ai-worker-inference
+    command: arq worker.InferenceWorkerSettings
     restart: always
     environment:
       - REDIS_URL=redis://redis:6379
@@ -90,6 +93,37 @@ services:
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
       - BACKEND_URL=http://backend:8000
+      - WORKER_ROLE=inference
+    depends_on:
+      - redis
+      - minio
+      - mlflow
+      - backend
+    volumes:
+      - ./ai_worker:/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ai_worker_trainer:
+    build: 
+      context: ./ai_worker
+    container_name: geoprice-ai-worker-trainer
+    command: arq worker.TrainerWorkerSettings
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MINIO_URL=minio:9000
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - BACKEND_URL=http://backend:8000
+      - WORKER_ROLE=trainer
     depends_on:
       - redis
       - minio
@@ -115,6 +149,7 @@ services:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
       - LABEL_STUDIO_USERNAME=${LABEL_STUDIO_USERNAME}
       - LABEL_STUDIO_PASSWORD=${LABEL_STUDIO_PASSWORD}
+      - LABEL_STUDIO_ENABLE_LEGACY_API_TOKEN=${LABEL_STUDIO_ENABLE_LEGACY_API_TOKEN}
     volumes:
       - label_studio_data:/label-studio/data
 
