@@ -19,5 +19,5 @@ mlflow_data/
 label_studio_data/
 backend/app/data/
 ai_worker/*.csv
-
+*harvested*.json
 PROJECT_KNOWLEDGE.md

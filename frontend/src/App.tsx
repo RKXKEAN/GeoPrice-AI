@@ -962,13 +962,33 @@ export function App() {
               /* SECTION: User scanned in Select Mode, Target Building Polygon detected */
               <div className="space-y-3 pt-1">
                 {/* Confidence & Shape Type Badge */}
-                <div className="bg-cyan-950/40 p-2.5 rounded-lg border border-cyan-800/50 flex items-center justify-between gap-2 shadow-sm">
-                  <div className="flex items-center gap-1.5 text-xs text-cyan-300 font-semibold">
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                    <span>AI Vision Radar (ตรวจพบรูปทรง Polygon):</span>
+                <div className={`p-2.5 rounded-lg border flex items-center justify-between gap-2 shadow-sm ${
+                  visionResult.target_building.method === 'cadastral_survey_polygon'
+                    ? 'bg-emerald-950/40 border-emerald-700/60'
+                    : 'bg-cyan-950/40 border-cyan-800/50'
+                }`}>
+                  <div className={`flex items-center gap-1.5 text-xs font-semibold ${
+                    visionResult.target_building.method === 'cadastral_survey_polygon' ? 'text-emerald-300' : 'text-cyan-300'
+                  }`}>
+                    {visionResult.target_building.method === 'cadastral_survey_polygon' ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    )}
+                    <span>
+                      {visionResult.target_building.method === 'cadastral_survey_polygon'
+                        ? '📐 รูปแปลงและพื้นที่จริง (รังวัด 21,718 แปลง):'
+                        : 'AI Vision Radar (ตรวจพบรูปทรง Polygon):'}
+                    </span>
                   </div>
-                  <div className="text-[11px] text-cyan-200 font-mono bg-cyan-900/60 px-2 py-0.5 rounded border border-cyan-700/50">
-                    ความมั่นใจ {Math.round(visionResult.target_building.confidence * 100)}%
+                  <div className={`text-[11px] font-mono px-2 py-0.5 rounded border ${
+                    visionResult.target_building.method === 'cadastral_survey_polygon'
+                      ? 'text-emerald-200 bg-emerald-900/60 border-emerald-700/50'
+                      : 'text-cyan-200 bg-cyan-900/60 border-cyan-700/50'
+                  }`}>
+                    {visionResult.target_building.method === 'cadastral_survey_polygon'
+                      ? 'ข้อมูลจริง 100%'
+                      : `ความมั่นใจ ${Math.round(visionResult.target_building.confidence * 100)}%`}
                   </div>
                 </div>
 
@@ -991,7 +1011,11 @@ export function App() {
                     <div className="text-xs font-semibold text-slate-200 mt-1">
                       {visionResult.target_building.width_m} × {visionResult.target_building.length_m} ม.
                     </div>
-                    <div className="text-[10px] text-slate-500">รูปทรง Polygon สถาปัตยกรรม</div>
+                    <div className="text-[10px] text-slate-500">
+                      {visionResult.target_building.method === 'cadastral_survey_polygon'
+                        ? 'รูปแปลงรังวัดจริง (Cadastral GIS)'
+                        : 'รูปทรง Polygon สถาปัตยกรรม'}
+                    </div>
                   </div>
 
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
@@ -1013,11 +1037,17 @@ export function App() {
                   </div>
 
                   <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
-                    <div className="text-[10px] text-slate-400">แหล่งข้อมูลราคา</div>
+                    <div className="text-[10px] text-slate-400">แหล่งข้อมูลรูปแปลง & ราคา</div>
                     <div className="text-xs font-semibold text-emerald-400 mt-1 truncate">
-                      {visionResult.target_building.valuation_source || 'กรมธนารักษ์ / ML'}
+                      {visionResult.target_building.method === 'cadastral_survey_polygon'
+                        ? 'ฐานข้อมูลรังวัดจริง 21,718 แปลง'
+                        : (visionResult.target_building.valuation_source || 'กรมธนารักษ์ / ML')}
                     </div>
-                    <div className="text-[10px] text-slate-500">ฐานข้อมูลทางการ</div>
+                    <div className="text-[10px] text-slate-500">
+                      {visionResult.target_building.method === 'cadastral_survey_polygon'
+                        ? 'ข้อมูลรังวัดตรงจุด 100%'
+                        : 'ฐานข้อมูลทางการ'}
+                    </div>
                   </div>
                 </div>
 

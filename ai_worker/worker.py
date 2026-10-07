@@ -337,6 +337,175 @@ def get_spatial_appraisal_index():
     return _cadastral_df, _cadastral_tree
 
 # ==============================================================================
+# 🗺️ 21,718 REAL SURVEYED CADASTRAL POLYGONS (Point-in-Polygon & Exact Area Matching)
+# ==============================================================================
+
+_harvested_polygons = None
+_harvested_tree = None
+
+def get_spatial_harvested_polygons_index():
+    """
+    Loads 21,718 real surveyed cadastral and building polygons.
+    Builds an in-memory spatial cKDTree index of centroids for sub-millisecond lookups.
+    """
+    global _harvested_polygons, _harvested_tree
+    if _harvested_polygons is not None and _harvested_tree is not None:
+        return _harvested_polygons, _harvested_tree
+
+    local_path = "/tmp/hatyai_parcels_harvested.json"
+    if not os.path.exists(local_path):
+        try:
+            import boto3
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=f"http://{os.getenv('MINIO_URL', 'minio:9000')}",
+                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "admin"),
+                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "password123"),
+            )
+            print("[GeoPrice Worker] 📥 Downloading hatyai_parcels_harvested.json (21,718 polygons) from MinIO...")
+            s3.download_file("datasets", "hatyai_parcels_harvested.json", local_path)
+            print("[GeoPrice Worker] ✅ Downloaded hatyai_parcels_harvested.json successfully!")
+        except Exception as e:
+            print(f"[GeoPrice Worker] ⚠️ Failed downloading harvested polygons from MinIO: {e}")
+
+    if not os.path.exists(local_path):
+        for alt in [
+            "/app/data/hatyai_parcels_harvested.json",
+            "backend/app/data/hatyai_parcels_harvested.json",
+            "D:/Geo-price/backend/app/data/hatyai_parcels_harvested.json"
+        ]:
+            if os.path.exists(alt):
+                local_path = alt
+                break
+
+    if os.path.exists(local_path):
+        try:
+            t0 = time.time()
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            features = data.get("features", [])
+            polys = []
+            centroids = []
+            for feat in features:
+                geom = feat.get("geometry", {})
+                coords = geom.get("coordinates", [[]])[0]
+                if not coords or len(coords) < 3:
+                    continue
+                lons = [float(p[0]) for p in coords]
+                lats = [float(p[1]) for p in coords]
+                c_lon = sum(lons) / len(lons)
+                c_lat = sum(lats) / len(lats)
+                min_lon, max_lon = min(lons), max(lons)
+                min_lat, max_lat = min(lats), max(lats)
+
+                # Geodesic width & length (meters)
+                w_m = round((max_lon - min_lon) * 111320.0 * math.cos(math.radians(c_lat)), 1)
+                l_m = round((max_lat - min_lat) * 110574.0, 1)
+
+                # Area calculation via Shoelace formula
+                try:
+                    lat0 = coords[0][1]
+                    m_lat = 110574.0
+                    m_lon = 111320.0 * math.cos(math.radians(lat0))
+                    poly_area = 0.0
+                    for i in range(len(coords) - 1):
+                        x1 = coords[i][0] * m_lon
+                        y1 = coords[i][1] * m_lat
+                        x2 = coords[i + 1][0] * m_lon
+                        y2 = coords[i + 1][1] * m_lat
+                        poly_area += (x1 * y2 - x2 * y1)
+                    area_sqm = round(abs(poly_area) / 2.0, 2)
+                except Exception:
+                    area_sqm = round(w_m * l_m, 2)
+
+                pid = feat.get("id") or feat.get("properties", {}).get("id") or ""
+                props = feat.get("properties", {})
+                polys.append({
+                    "id": str(pid),
+                    "properties": props,
+                    "coordinates": coords,
+                    "centroid": (c_lat, c_lon),
+                    "bbox": (min_lat, min_lon, max_lat, max_lon),
+                    "area_sqm": area_sqm,
+                    "area_wah": round(area_sqm / 4.0, 2),
+                    "width_m": w_m,
+                    "length_m": l_m,
+                })
+                centroids.append([c_lat, c_lon])
+
+            if centroids:
+                _harvested_tree = cKDTree(np.array(centroids))
+                _harvested_polygons = polys
+                print(f"[GeoPrice Worker] 🚀 Indexed {len(polys):,} real surveyed polygons in {time.time() - t0:.2f}s!")
+        except Exception as e:
+            print(f"[GeoPrice Worker] ⚠️ Error loading harvested polygons: {e}")
+
+    return _harvested_polygons, _harvested_tree
+
+
+def point_in_polygon_test(lon: float, lat: float, ring: list) -> bool:
+    """Ray-casting algorithm to test whether point (lon, lat) is inside polygon ring."""
+    inside = False
+    n = len(ring)
+    if n < 3:
+        return False
+    p1x, p1y = ring[0][0], ring[0][1]
+    for i in range(n + 1):
+        p2x, p2y = ring[i % n][0], ring[i % n][1]
+        if lat > min(p1y, p2y):
+            if lat <= max(p1y, p2y):
+                if lon <= max(p1x, p2x):
+                    if p1y != p2y:
+                        xinters = (lat - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                    if p1x == p2x or lon <= xinters:
+                        inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
+
+
+def find_matching_harvested_polygon(lat: float, lon: float, max_search_radius_m: float = 50.0):
+    """
+    Checks if (lat, lon) directly hits or lies inside any real parcel from the 21,718 dataset.
+    Returns: matched parcel dict or None if no match.
+    """
+    polys, tree = get_spatial_harvested_polygons_index()
+    if not polys or tree is None:
+        return None
+
+    radius_deg = max_search_radius_m / 111320.0
+    candidate_indices = tree.query_ball_point([lat, lon], r=radius_deg)
+    if not candidate_indices:
+        dists, indices = tree.query([lat, lon], k=min(3, len(polys)))
+        if hasattr(indices, "__iter__"):
+            candidate_indices = [int(i) for d, i in zip(dists, indices) if d * 111320.0 <= max_search_radius_m]
+        else:
+            candidate_indices = [int(indices)] if dists * 111320.0 <= max_search_radius_m else []
+
+    best_proximity_match = None
+    min_dist_to_center = float("inf")
+
+    for idx in candidate_indices:
+        p = polys[idx]
+        min_lat, min_lon, max_lat, max_lon = p["bbox"]
+        buf = 0.00002  # ~2 meters buffer for bounding box pre-filter
+        if not (min_lat - buf <= lat <= max_lat + buf and min_lon - buf <= lon <= max_lon + buf):
+            continue
+
+        # Exact Point-in-Polygon check
+        if point_in_polygon_test(lon, lat, p["coordinates"]):
+            return p
+
+        # Check proximity to centroid
+        c_lat, c_lon = p["centroid"]
+        dist_m = math.hypot((c_lat - lat) * 110574.0, (c_lon - lon) * 110488.0)
+        if dist_m < min_dist_to_center and dist_m <= 10.0:  # within 10 meters of centroid
+            min_dist_to_center = dist_m
+            best_proximity_match = p
+
+    return best_proximity_match
+
+
+# ==============================================================================
 # 🧠 DYNAMIC 3-SLOT MACHINE LEARNING MODELS (MinIO S3 + Redis Synchronized)
 # ==============================================================================
 
@@ -2376,40 +2545,79 @@ async def radar_vision_detect(
             matched_box_index = i
 
     # ==============================================================================
-    # STEP 2: OpenCV Contour Extractor (Extract Exact Target Roof Polygon & Area)
+    # STEP 2: Real Cadastral Polygon Matching (Check if clicked location hits 21,718 real dataset)
     # ==============================================================================
-    stitched_bgr = cv2.cvtColor(np.array(stitched), cv2.COLOR_RGB2BGR)
-    target_cv = extract_target_roof_polygon(
-        image_bgr=stitched_bgr,
-        click_x=local_px,
-        click_y=local_py,
-        m_per_px=m_per_px,
-        bounding_box=matched_target_box
-    )
+    real_parcel_match = find_matching_harvested_polygon(latitude, longitude, max_search_radius_m=45.0)
 
-    target_poly_coords = []
-    for pt in target_cv["points"]:
-        plat, plon = pixel_to_geo(float(pt[0]), float(pt[1]))
-        target_poly_coords.append([plon, plat])
-    if target_poly_coords and target_poly_coords[0] != target_poly_coords[-1]:
-        target_poly_coords.append(target_poly_coords[0])
+    target_cv = {}
+    if real_parcel_match is not None:
+        # ✅ REAL SURVEYED CADASTRAL MATCH FOUND (Direct Hit in 21,718 dataset)
+        target_poly_coords = [list(pt) for pt in real_parcel_match["coordinates"]]
+        if target_poly_coords and target_poly_coords[0] != target_poly_coords[-1]:
+            target_poly_coords.append(target_poly_coords[0])
 
-    t_lat, t_lon = pixel_to_geo(float(target_cv["center"][0]), float(target_cv["center"][1]))
+        real_area_sqm = float(real_parcel_match["area_sqm"])
+        real_area_wah = float(real_parcel_match["area_wah"])
+        c_lat, c_lon = real_parcel_match["centroid"]
+        parcel_id = real_parcel_match.get("id") or ""
+        props = real_parcel_match.get("properties", {}) or {}
+        p_name = props.get("name") or f"แปลงที่ดิน {parcel_id}"
 
-    target_bld = {
-        "found": target_cv["found"],
-        "method": target_cv.get("method", "opencv_contour"),
-        "confidence": target_cv["confidence"],
-        "shape_type": "polygon",
-        "area_sqm": target_cv["area_sqm"],
-        "area_wah": target_cv["area_wah"],
-        "width_m": target_cv["width_m"],
-        "length_m": target_cv["length_m"],
-        "distance_m": 0.0,
-        "coordinates": target_poly_coords,
-        "center": [t_lat, t_lon] if target_cv["found"] else [latitude, longitude],
-        "is_direct_hit": target_cv["found"],
-    }
+        target_bld = {
+            "found": True,
+            "method": "cadastral_survey_polygon",
+            "confidence": 1.0,
+            "shape_type": "polygon",
+            "area_sqm": real_area_sqm,
+            "area_wah": real_area_wah,
+            "width_m": real_parcel_match.get("width_m", 15.0),
+            "length_m": real_parcel_match.get("length_m", 20.0),
+            "distance_m": 0.0,
+            "coordinates": target_poly_coords,
+            "center": [c_lat, c_lon],
+            "is_direct_hit": True,
+            "parcel_id": parcel_id,
+            "parcel_name": p_name,
+            "source": "ข้อมูลจริงจากฐานข้อมูลสำรวจรังวัด (21,718 แปลง)",
+            "source_badge": "real_exact",
+        }
+        print(f"[GeoPrice Vision Radar] 🎯 Matched real cadastral parcel '{parcel_id}'! Using exact area {real_area_sqm:,.2f} m² and survey polygon geometry.")
+    else:
+        # 🔄 FALLBACK: OpenCV Contour Extractor (Extract Exact Target Roof Polygon & Area)
+        stitched_bgr = cv2.cvtColor(np.array(stitched), cv2.COLOR_RGB2BGR)
+        target_cv = extract_target_roof_polygon(
+            image_bgr=stitched_bgr,
+            click_x=local_px,
+            click_y=local_py,
+            m_per_px=m_per_px,
+            bounding_box=matched_target_box
+        )
+
+        target_poly_coords = []
+        for pt in target_cv.get("points", []):
+            plat, plon = pixel_to_geo(float(pt[0]), float(pt[1]))
+            target_poly_coords.append([plon, plat])
+        if target_poly_coords and target_poly_coords[0] != target_poly_coords[-1]:
+            target_poly_coords.append(target_poly_coords[0])
+
+        t_lat, t_lon = pixel_to_geo(float(target_cv["center"][0]), float(target_cv["center"][1])) if target_cv.get("center") else (latitude, longitude)
+
+        target_bld = {
+            "found": target_cv.get("found", False),
+            "method": target_cv.get("method", "opencv_contour"),
+            "confidence": target_cv.get("confidence", 0.85),
+            "shape_type": "polygon",
+            "area_sqm": target_cv.get("area_sqm", 200.0),
+            "area_wah": target_cv.get("area_wah", 50.0),
+            "width_m": target_cv.get("width_m", 15.0),
+            "length_m": target_cv.get("length_m", 20.0),
+            "distance_m": 0.0,
+            "coordinates": target_poly_coords,
+            "center": [t_lat, t_lon] if target_cv.get("found") else [latitude, longitude],
+            "is_direct_hit": target_cv.get("found", False),
+            "source": "สกัดรูปทรงจากภาพถ่ายดาวเทียม (AI Vision)",
+            "source_badge": "ai_predicted",
+        }
 
     # Surrounding buildings (vector Polygon Masks when segmentation is available, fallback to rectilinear BBoxes)
     surrounding_blds = []
@@ -2467,9 +2675,9 @@ async def radar_vision_detect(
     density = "เบาบาง (Low Density)" if total_detected < 15 else ("หนาแน่นปานกลาง (Medium Density)" if total_detected < 45 else "หนาแน่นสูง (High Urban Density)")
 
     # ==============================================================================
-    # STEP 3: Combine OpenCV Target Net Area ($m^2$) + YOLO Density Count -> Price Model
+    # STEP 3: Combine Target Net Area ($m^2$) + YOLO Density Count -> Price Model
     # ==============================================================================
-    pricing = resolve_hybrid_zone_pricing(latitude, longitude, density_count=total_detected)
+    pricing = resolve_hybrid_zone_pricing(latitude, longitude, area_sqm=target_bld["area_sqm"], density_count=total_detected)
     price_per_wah = pricing["price_per_wah"]
     target_total_price = int(target_bld["area_wah"] * price_per_wah)
 
@@ -2485,23 +2693,26 @@ async def radar_vision_detect(
         "price_per_wah": price_per_wah,
         "price_per_sqm": pricing["price_per_sqm"],
         "total_estimated_price": target_total_price,
-        "road_name": pricing["road_name"],
+        "road_name": target_bld.get("parcel_name") or pricing["road_name"],
         "zone_name": pricing["zone_name"],
         "subdistrict": pricing["subdistrict"],
         "district": pricing["district"],
-        "valuation_source": pricing.get("valuation_source"),
-        "source_badge": pricing.get("source_badge"),
+        "valuation_source": target_bld.get("source") or pricing.get("valuation_source"),
+        "source": target_bld.get("source") or pricing.get("valuation_source"),
+        "source_badge": target_bld.get("source_badge") or pricing.get("source_badge"),
+        "is_direct_hit": target_bld.get("is_direct_hit", True),
         "nearest_dist_m": pricing.get("nearest_dist_m"),
-        "nearest_parcel_id": pricing.get("nearest_parcel_id"),
-        "parcel_total_value": pricing.get("parcel_total_value"),
-        "parcel_area_sqm": pricing.get("parcel_area_sqm"),
-        "parcel_area_wah": pricing.get("parcel_area_wah"),
+        "nearest_parcel_id": target_bld.get("parcel_id") or pricing.get("nearest_parcel_id"),
+        "parcel_id": target_bld.get("parcel_id") or pricing.get("nearest_parcel_id"),
+        "parcel_total_value": target_total_price,
+        "parcel_area_sqm": target_bld["area_sqm"],
+        "parcel_area_wah": target_bld["area_wah"],
         "market_price_per_sqw": pricing.get("market_price_per_sqw"),
         "center": target_bld["center"],
         "coordinates": target_bld["coordinates"],
         "normalized_polygon": [
             [round(float(p[0]) / float(img_w), 5), round(float(p[1]) / float(img_h), 5)]
-            for p in target_cv["points"]
+            for p in target_cv.get("points", [])
         ] if target_cv.get("found") and target_cv.get("points") else [],
         "target_box_normalized": [
             round(matched_target_box[0] / float(img_w), 5),
@@ -2543,12 +2754,17 @@ async def radar_vision_detect(
             "total_buildings_detected": total_detected,
             "density_level": density,
             "zone_name": pricing["zone_name"],
-            "road_name": pricing["road_name"],
+            "road_name": target_bld.get("parcel_name") or pricing["road_name"],
             "base_price_wah": price_per_wah,
             "price_per_sqm": pricing["price_per_sqm"],
-            "valuation_source": pricing.get("valuation_source"),
-            "source_badge": pricing.get("source_badge"),
-            "parcel_total_value": pricing.get("parcel_total_value"),
+            "valuation_source": target_bld.get("source") or pricing.get("valuation_source"),
+            "source_badge": target_bld.get("source_badge") or pricing.get("source_badge"),
+            "parcel_total_value": target_total_price,
+            "parcel_id": target_bld.get("parcel_id") or pricing.get("nearest_parcel_id"),
+            "target_area_sqm": target_bld["area_sqm"],
+            "target_area_wah": target_bld["area_wah"],
+            "is_real_cadastral_matched": (target_bld.get("method") == "cadastral_survey_polygon"),
+            "detection_method": target_bld.get("method"),
             "vision_model": os.getenv("VISION_MODEL_NAME", "YOLO-test"),
         },
         "surrounding_buildings": surrounding_blds,

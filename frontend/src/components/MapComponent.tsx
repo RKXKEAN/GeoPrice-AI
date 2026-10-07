@@ -939,8 +939,25 @@ export const MapComponent = ({
           >
             <Tooltip sticky>
               <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: '11px', lineHeight: '1.4' }}>
-                <div style={{ fontWeight: 700, color: '#34d399' }}>🎯 อาคารเป้าหมาย (Polygon)</div>
-                <div>วิธี: {visionResult?.target_building?.method === 'fastsam_ai' ? 'FastSAM Foundation AI (Zero-Shot)' : visionResult?.target_building?.method === 'superpixel_fluid' ? 'SuperPixel + Fluid Field (SLIC)' : (visionResult?.target_building?.method || 'AI Vector Polygon')}</div>
+                <div style={{ fontWeight: 700, color: '#34d399' }}>
+                  {visionResult?.target_building?.method === 'cadastral_survey_polygon'
+                    ? '📐 รูปแปลงรังวัดจริง (21,718 แปลง)'
+                    : '🎯 อาคารเป้าหมาย (Polygon)'}
+                </div>
+                <div>
+                  วิธี: {visionResult?.target_building?.method === 'cadastral_survey_polygon'
+                    ? 'ฐานข้อมูลสำรวจและรังวัดจริง (Cadastral Survey GIS)'
+                    : visionResult?.target_building?.method === 'fastsam_ai'
+                    ? 'FastSAM Foundation AI (Zero-Shot)'
+                    : visionResult?.target_building?.method === 'superpixel_fluid'
+                    ? 'SuperPixel + Fluid Field (SLIC)'
+                    : (visionResult?.target_building?.method || 'AI Vector Polygon')}
+                </div>
+                {visionResult?.target_building?.area_sqm && (
+                  <div style={{ color: '#93c5fd', marginTop: '2px' }}>
+                    พื้นที่: {visionResult.target_building.area_sqm.toLocaleString()} ตร.ม. ({visionResult.target_building.area_wah} ตร.ว.)
+                  </div>
+                )}
               </div>
             </Tooltip>
           </LeafletPolygon>

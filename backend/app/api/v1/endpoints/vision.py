@@ -53,7 +53,7 @@ async def scan_radar_vision(
             radar_sum = result.get("radar_summary", {})
 
             land_plot = LandPlot(
-                plot_name=f"AOI Radar Scan ({req.latitude:.4f}, {req.longitude:.4f})",
+                plot_name=target_data.get("parcel_name") or f"AOI Radar Scan ({req.latitude:.4f}, {req.longitude:.4f})",
                 latitude=req.latitude,
                 longitude=req.longitude,
                 geometry={"type": "Polygon", "coordinates": [target_data.get("coordinates", [])]} if target_data.get("coordinates") else None,
@@ -64,6 +64,8 @@ async def scan_radar_vision(
                     "density_level": radar_sum.get("density_level"),
                     "total_buildings_detected": radar_sum.get("total_buildings_detected", 0),
                     "valuation_source": radar_sum.get("valuation_source"),
+                    "parcel_id": target_data.get("parcel_id"),
+                    "detection_method": target_data.get("method"),
                 }
             )
             db.add(land_plot)
