@@ -48,6 +48,35 @@ async def submit_prediction_feedback(
     except Exception as e:
         logger.warning(f"Could not persist feedback to Redis: {e}")
 
+    # Persist in MinIO datasets/user_price_feedbacks.csv
+    try:
+        import io, csv
+        from app.services.minio_service import get_minio_service
+        minio_svc = get_minio_service()
+        existing_lines = ""
+        try:
+            res = minio_svc.client.get_object("datasets", "user_price_feedbacks.csv")
+            existing_lines = res.read().decode("utf-8")
+        except Exception:
+            pass
+
+        fieldnames = ["feedback_id", "job_id", "rating", "expected_price", "comment", "created_at"]
+        output = io.StringIO()
+        if not existing_lines:
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow(record)
+            all_csv = output.getvalue().encode("utf-8")
+        else:
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writerow(record)
+            all_csv = (existing_lines.rstrip() + "\n" + output.getvalue()).encode("utf-8")
+
+        minio_svc.client.put_object("datasets", "user_price_feedbacks.csv", io.BytesIO(all_csv), length=len(all_csv), content_type="text/csv")
+        logger.info(f"Persisted user price feedback {feedback_id} to MinIO 'datasets/user_price_feedbacks.csv'")
+    except Exception as e:
+        logger.warning(f"Could not persist feedback to MinIO: {e}")
+
     logger.info(
         f"Recorded prediction feedback {feedback_id} for job {feedback.job_id}: rating='{feedback.rating}', expected={feedback.expected_price}"
     )

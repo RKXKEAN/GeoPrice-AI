@@ -23,10 +23,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
-    allowedHosts: [
-      'laptop-7uu9pl8q.tail3654bb.ts.net',
-      '.ts.net',
-    ],
+    allowedHosts: true,
     proxy: {
       '/api': {
         target: BACKEND_URL,

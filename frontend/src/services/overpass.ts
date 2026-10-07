@@ -38,7 +38,9 @@ const getFallbackPOIs = (lat: number, lon: number, radiusM: number = 3000): Over
           type: p.category || 'poi',
           tags: {
             name: p.name,
-            amenity: p.category,
+            category: p.category || '',
+            category_th: p.category_th || '',
+            amenity: p.category || '',
             description: p.description || '',
             badge: p.badge || '',
           },

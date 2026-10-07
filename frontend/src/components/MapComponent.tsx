@@ -11,16 +11,18 @@ import {
   Marker,
   Popup,
   useMap,
-  useMapEvents
+  useMapEvents,
+  Polygon as LeafletPolygon
 } from 'react-leaflet';
 import L from 'leaflet';
-import type { Feature, Polygon } from 'geojson';
 import * as turf from '@turf/turf';
-import { Pencil, Square, Scissors, Trash2 } from 'lucide-react';
+import { Pencil, Square, Scissors, Trash2, X, HelpCircle } from 'lucide-react';
 import { EditControl } from './EditControl';
 import { fetchPOIsAround, type OverpassPOI } from '../services/overpass';
 import { scanVisionRadar, type RadarVisionResponse } from '../services/api';
-import { resolveZoneAppraisalRate } from '../services/zonePricing';
+import { resolveZoneAppraisalRate, formatThaiLandAreaStr } from '../services/zonePricing';
+import { getPOIMeta, createPOIIcon, type POIMeta } from '../utils/poiMeta';
+import hatYaiBoundaryData from '../data/hatyai_district_boundary.json';
 
 // Configure Leaflet Draw Thai Localization
 if (typeof L !== 'undefined' && (L as any).drawLocal) {
@@ -44,20 +46,6 @@ if (typeof L !== 'undefined' && (L as any).drawLocal) {
   (L as any).drawLocal.edit.handlers.edit.tooltip.subtext = 'กด "บันทึก" เมื่อแก้ไขเสร็จสิ้น';
 }
 
-const formatThaiLandAreaStr = (sqm: number) => {
-  const rai = Math.floor(sqm / 1600);
-  const remainingAfterRai = sqm % 1600;
-  const ngan = Math.floor(remainingAfterRai / 400);
-  const remainingAfterNgan = remainingAfterRai % 400;
-  const wah = Math.round(((remainingAfterNgan / 4) * 10)) / 10;
-
-  const parts = [];
-  if (rai > 0) parts.push(`${rai} ไร่`);
-  if (ngan > 0) parts.push(`${ngan} งาน`);
-  if (wah > 0 || parts.length === 0) parts.push(`${wah} ตร.ว.`);
-  return parts.join(' ');
-};
-
 export interface DrawnPlotData {
   geometry: any;
   latitude: number;
@@ -80,6 +68,7 @@ interface MapComponentProps {
   onVisionResult?: (result: RadarVisionResponse | null) => void;
   isVisionScanning?: boolean;
   setIsVisionScanning?: (scanning: boolean) => void;
+  isSidebarOpen?: boolean;
 }
 
 // Fix default Leaflet icon paths
@@ -93,104 +82,108 @@ L.Icon.Default.mergeOptions({
 // Default center: Hat Yai District, Songkhla Province, Thailand
 const HAT_YAI_COORDINATES: [number, number] = [7.0084, 100.4767];
 
-// Hat Yai District Boundary (อำเภอหาดใหญ่) Mock GeoJSON Polygon
-const HAT_YAI_BOUNDARY_GEOJSON: Feature<Polygon> = {
-  type: 'Feature',
-  properties: {
-    name: 'ขอบเขตอำเภอหาดใหญ่',
-    district: 'Hat Yai',
-    province: 'Songkhla',
-  },
-  geometry: {
-    type: 'Polygon',
-    coordinates: [
-      [
-        [100.3650, 7.1150],
-        [100.4120, 7.1420],
-        [100.4680, 7.1510],
-        [100.5280, 7.1260],
-        [100.5750, 7.0780],
-        [100.6010, 7.0120],
-        [100.5890, 6.9450],
-        [100.5420, 6.8920],
-        [100.4750, 6.8680],
-        [100.4050, 6.8950],
-        [100.3520, 6.9480],
-        [100.3340, 7.0250],
-        [100.3420, 7.0760],
-        [100.3650, 7.1150]
-      ]
-    ]
-  }
-};
+// Official Hat Yai District Boundary (อำเภอหาดใหญ่) from OSM Relation 18959810 (852.8 sq.km)
+const HAT_YAI_BOUNDARY_GEOJSON = hatYaiBoundaryData.boundaryFeature as any;
+const HAT_YAI_OUTER_MASK_GEOJSON = hatYaiBoundaryData.maskFeature as any;
+const HAT_YAI_SUBDISTRICTS = hatYaiBoundaryData.subdistricts;
+const HAT_YAI_DISTRICT_BBOX: [[number, number], [number, number]] = [
+  [hatYaiBoundaryData.metadata.bbox[1], hatYaiBoundaryData.metadata.bbox[0]], // [6.78711, 100.19088] (SW)
+  [hatYaiBoundaryData.metadata.bbox[3], hatYaiBoundaryData.metadata.bbox[2]], // [7.18704, 100.60825] (NE)
+];
 
-// Helper to classify Overpass POI emoji, color, and label
-const getPOIMeta = (poi: OverpassPOI) => {
-  const amenity = poi.tags?.amenity;
-  const shop = poi.tags?.shop;
-
-  if (amenity === 'hospital') {
-    return { emoji: '🏥', color: '#ef4444', label: 'โรงพยาบาล (Hospital)' };
-  } else if (amenity === 'school') {
-    return { emoji: '🏫', color: '#f59e0b', label: 'โรงเรียน (School)' };
-  } else if (amenity === 'university') {
-    return { emoji: '🎓', color: '#3b82f6', label: 'มหาวิทยาลัย (University)' };
-  } else if (amenity === 'marketplace') {
-    return { emoji: '🛒', color: '#10b981', label: 'ตลาด (Marketplace)' };
-  } else if (shop === 'mall') {
-    return { emoji: '🛍️', color: '#ec4899', label: 'ห้างสรรพสินค้า (Mall)' };
-  } else if (shop === 'supermarket') {
-    return { emoji: '🏪', color: '#8b5cf6', label: 'ซูเปอร์มาร์เก็ต (Supermarket)' };
-  }
-
-  return { emoji: '📍', color: '#06b6d4', label: amenity || shop || poi.category || 'สถานที่สำคัญ' };
-};
-
-// Custom glowing HTML div-icon for POI pins
-const createPOIIcon = (emoji: string, color: string) => {
+const createSubdistrictIcon = (nameTh: string) => {
   return L.divIcon({
-    className: 'custom-poi-div',
+    className: 'custom-subdistrict-marker',
     html: `
-      <div class="landmark-pin-container" style="cursor: pointer;">
-        <div class="landmark-pulse" style="background: ${color};"></div>
-        <div class="landmark-pin" style="background: ${color}; box-shadow: 0 2px 8px ${color}80;">
-          <span style="font-size: 15px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));">${emoji}</span>
-        </div>
+      <div style="
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        background: rgba(15, 23, 42, 0.88);
+        border: 1px solid rgba(56, 189, 248, 0.45);
+        border-radius: 9999px;
+        padding: 2px 7px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(6px);
+        white-space: nowrap;
+        cursor: pointer;
+        transition: transform 0.15s ease;
+      ">
+        <span style="font-size: 10px;">📍</span>
+        <span style="font-size: 10px; font-weight: 600; color: #f1f5f9; font-family: sans-serif;">${nameTh.replace('ตำบล', '')}</span>
       </div>
     `,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-    popupAnchor: [0, -18],
+    iconSize: [80, 22],
+    iconAnchor: [40, 11],
   });
 };
 
-// Custom glowing pin icon for target building detected by YOLOv8
-const createTargetPinIcon = () => {
-  return L.divIcon({
-    className: 'custom-target-marker',
-    html: `
-      <div style="position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer;">
-        <div style="position: absolute; width: 44px; height: 44px; border-radius: 50%; background: rgba(16, 185, 129, 0.4); animation: landmarkPulse 1.8s infinite;"></div>
-        <div style="width: 32px; height: 32px; border-radius: 50%; background: #059669; border: 2.5px solid #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 16px rgba(16, 185, 129, 0.9);">
-          <span style="font-size: 16px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));">🎯</span>
-        </div>
-      </div>
-    `,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-    popupAnchor: [0, -18],
-  });
-};
-
-// Component to handle map size invalidation on render
-const MapResizer = () => {
+// Component to provide programmatic zooming to the full Hat Yai district boundary
+const DistrictBoundaryActions = () => {
   const map = useMap();
   useEffect(() => {
-    const timer = setTimeout(() => {
-      map.invalidateSize();
-    }, 200);
-    return () => clearTimeout(timer);
+    (window as any).__geoprice_fit_hatyai = () => {
+      map.fitBounds(HAT_YAI_DISTRICT_BBOX, {
+        padding: [30, 30],
+        duration: 0.8,
+      });
+    };
+    return () => {
+      delete (window as any).__geoprice_fit_hatyai;
+    };
   }, [map]);
+  return null;
+};
+
+
+
+// Component to handle map size invalidation with ResizeObserver & container transitions
+const MapResizer = ({ isSidebarOpen }: { isSidebarOpen?: boolean }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    const handleResize = () => {
+      map.invalidateSize();
+    };
+
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+
+    // Direct ResizeObserver on Leaflet container DOM to catch 100% full-screen transitions
+    let resizeObserver: ResizeObserver | null = null;
+    const container = map.getContainer();
+    if (container && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        map.invalidateSize();
+      });
+      resizeObserver.observe(container);
+    }
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      if (resizeObserver && container) {
+        resizeObserver.unobserve(container);
+        resizeObserver.disconnect();
+      }
+    };
+  }, [map]);
+
+  // Timed invalidations when sidebar toggles to sync with Tailwind CSS transition duration
+  useEffect(() => {
+    const t0 = setTimeout(() => map.invalidateSize(), 50);
+    const t1 = setTimeout(() => map.invalidateSize(), 150);
+    const t2 = setTimeout(() => map.invalidateSize(), 300);
+    const t3 = setTimeout(() => map.invalidateSize(), 450);
+
+    return () => {
+      clearTimeout(t0);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [map, isSidebarOpen]);
+
   return null;
 };
 
@@ -238,13 +231,51 @@ export const MapComponent = ({
   visionResult,
   onVisionResult,
   isVisionScanning = false,
-  setIsVisionScanning
+  setIsVisionScanning,
+  isSidebarOpen
 }: MapComponentProps) => {
   const featureGroupRef = useRef<L.FeatureGroup | null>(null);
   const [radarCircle, setRadarCircle] = useState<any>(null);
   const [dynamicPOIs, setDynamicPOIs] = useState<OverpassPOI[]>([]);
   const [isFetchingPOIs, setIsFetchingPOIs] = useState<boolean>(false);
   const [flyTarget, setFlyTarget] = useState<[number, number] | null>(null);
+  const [selectedPOICategory, setSelectedPOICategory] = useState<string | null>(null);
+  const [showPOILegend, setShowPOILegend] = useState<boolean>(false);
+
+  // Group POIs by category for the filter & legend bar
+  const poiCategoryStats = useMemo(() => {
+    const counts: Record<string, { meta: POIMeta; count: number }> = {};
+    for (const poi of dynamicPOIs) {
+      const meta = getPOIMeta(poi);
+      if (!counts[meta.categoryKey]) {
+        counts[meta.categoryKey] = { meta, count: 0 };
+      }
+      counts[meta.categoryKey].count += 1;
+    }
+    return Object.values(counts).sort((a, b) => b.count - a.count);
+  }, [dynamicPOIs]);
+
+  const filteredPOIs = useMemo(() => {
+    if (!selectedPOICategory) return dynamicPOIs;
+    return dynamicPOIs.filter((poi) => getPOIMeta(poi).categoryKey === selectedPOICategory);
+  }, [dynamicPOIs, selectedPOICategory]);
+
+  // User can dismiss/toggle the UI Hint Banner (especially useful on iPad and mobile screens)
+  const [showHintBanner, setShowHintBanner] = useState(() => {
+    try {
+      const stored = localStorage.getItem('geoprice_show_hint_banner');
+      return stored !== null ? stored === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const handleToggleHintBanner = (visible: boolean) => {
+    setShowHintBanner(visible);
+    try {
+      localStorage.setItem('geoprice_show_hint_banner', String(visible));
+    } catch {}
+  };
 
   // Initial load of POIs around Hat Yai center so the map is never empty
   useEffect(() => {
@@ -259,7 +290,7 @@ export const MapComponent = ({
       });
   }, []);
 
-  // Sync plotData to featureGroupRef if layer is empty (e.g. converted from Target Building or re-mounted)
+  // Sync plotData to featureGroupRef whenever plotData changes (e.g. converted from Target Building or re-mounted)
   useEffect(() => {
     if (!plotData) {
       if (featureGroupRef.current) {
@@ -269,33 +300,31 @@ export const MapComponent = ({
     }
 
     if (featureGroupRef.current && plotData.geometry) {
-      const existingLayers = featureGroupRef.current.getLayers();
-      if (existingLayers.length === 0) {
-        const thaiUnit = formatThaiLandAreaStr(plotData.areaSqm);
-        const pricing = resolveZoneAppraisalRate(plotData.latitude, plotData.longitude);
-        const geoLayer = L.geoJSON(plotData.geometry as any, {
-          style: {
-            color: '#00f2fe',
-            weight: 3,
-            fillColor: '#00f2fe',
-            fillOpacity: 0.25,
-            className: 'glowing-polygon-path',
-          },
-        });
+      featureGroupRef.current.clearLayers();
+      const thaiUnit = formatThaiLandAreaStr(plotData.areaSqm);
+      const pricing = resolveZoneAppraisalRate(plotData.latitude, plotData.longitude);
+      const geoLayer = L.geoJSON(plotData.geometry as any, {
+        style: {
+          color: '#10b981',
+          weight: 3.5,
+          fillColor: '#059669',
+          fillOpacity: 0.35,
+          className: 'glowing-polygon-path',
+        },
+      });
 
-        geoLayer.eachLayer((subLayer: any) => {
-          subLayer.bindTooltip(
-            `<div style="text-align: center; padding: 2px 4px;">
-              <span style="color: #34d399; font-weight: 700; font-size: 13px;">📐 แปลงที่ดิน: ${plotData.areaSqm.toLocaleString()} ตร.ม.</span><br/>
-              <span style="color: #93c5fd; font-size: 11px; font-weight: 600;">(${thaiUnit})</span><br/>
-              <span style="color: #fbbf24; font-size: 10px;">฿${(plotData.priceRef || pricing.price_per_wah).toLocaleString()} / ตร.ว.</span>
-            </div>`,
-            { permanent: true, direction: 'center', className: 'drawn-plot-area-badge' }
-          ).openTooltip();
+      geoLayer.eachLayer((subLayer: any) => {
+        subLayer.bindTooltip(
+          `<div style="text-align: center; padding: 2px 4px;">
+            <span style="color: #34d399; font-weight: 700; font-size: 13px;">📐 แปลงที่ดิน: ${plotData.areaSqm.toLocaleString()} ตร.ม.</span><br/>
+            <span style="color: #93c5fd; font-size: 11px; font-weight: 600;">(${thaiUnit})</span><br/>
+            <span style="color: #fbbf24; font-size: 10px;">฿${(plotData.priceRef || pricing.price_per_wah).toLocaleString()} / ตร.ว.</span>
+          </div>`,
+          { permanent: false, sticky: true, className: 'drawn-plot-area-badge' }
+        );
 
-          featureGroupRef.current?.addLayer(subLayer);
-        });
-      }
+        featureGroupRef.current?.addLayer(subLayer);
+      });
     }
   }, [plotData]);
 
@@ -311,20 +340,12 @@ export const MapComponent = ({
     }
   }, [plotData, visionResult]);
 
-  // Memoized GeoJSON for target building (detected by OpenCV / YOLOv8 - Architectural Polygon)
-  // ONLY rendered in Select Mode
-  const targetGeoJSON = useMemo(() => {
-    if (interactionMode !== 'select') return null;
-    if (!visionResult?.target_building?.coordinates) return null;
-    return {
-      type: 'Feature' as const,
-      properties: visionResult.target_building,
-      geometry: {
-        type: 'Polygon' as const,
-        coordinates: [visionResult.target_building.coordinates],
-      },
-    };
-  }, [visionResult, interactionMode]);
+  // Pre-calculate [lat, lng] array for Leaflet Polygon rendering (fast, robust, reactive)
+  const targetBuildingLatLngs = useMemo(() => {
+    if (!visionResult?.target_building?.coordinates?.length) return null;
+    const rawCoords = visionResult.target_building.coordinates;
+    return rawCoords.map((pt: any) => [Number(pt[1]), Number(pt[0])] as [number, number]);
+  }, [visionResult]);
 
   // Memoized GeoJSON for surrounding buildings (within 200m - Bounding Box)
   const surroundingGeoJSON = useMemo(() => {
@@ -404,8 +425,8 @@ export const MapComponent = ({
         <span style="color: #93c5fd; font-size: 11px; font-weight: 600;">(${thaiUnit})</span><br/>
         <span style="color: #fbbf24; font-size: 10px;">฿${pricing.price_per_wah.toLocaleString()} / ตร.ว.</span>
       </div>`,
-      { permanent: true, direction: 'center', className: 'drawn-plot-area-badge' }
-    ).openTooltip();
+      { permanent: false, sticky: true, className: 'drawn-plot-area-badge' }
+    );
 
     // Set plotData strictly from user drawing!
     onPlotDrawn({
@@ -472,27 +493,176 @@ export const MapComponent = ({
 
   return (
     <div className="relative w-full h-full">
-      {/* UI Hint Banner: Dynamic based on interactionMode and scanning state */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 backdrop-blur-md text-slate-200 px-4 py-2.5 rounded-xl text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center gap-2 max-w-xl text-center pointer-events-auto shadow-cyan-500/10">
-        <span className="text-base shrink-0 animate-pulse">
-          {isVisionScanning ? '🛰️' : (interactionMode === 'select' ? '🎯' : '✏️')}
-        </span>
-        <span>
-          {isVisionScanning ? (
-            <span className="text-cyan-300 font-semibold flex items-center gap-2">
-              <span className="w-2.5 h-2.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-              กำลังตรวจจับด้วย AI (อาคารเป้าหมาย: Polygon, รอบข้าง 200 ม.: Bounding Box)...
+      {/* UI Hint Banner: Closable and toggleable for iPad and mobile screens */}
+      {showHintBanner ? (
+        <div className="absolute top-16 md:top-4 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 backdrop-blur-md text-slate-200 px-3 md:px-4 py-1.5 md:py-2.5 rounded-xl text-[11px] md:text-xs font-medium shadow-xl border border-cyan-500/40 flex items-center justify-between gap-2 max-w-[92vw] md:max-w-xl pointer-events-auto shadow-cyan-500/10 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="flex items-center gap-1.5 md:gap-2 text-left min-w-0">
+            <span className="text-sm md:text-base shrink-0 animate-pulse">
+              {isVisionScanning ? '🛰️' : (interactionMode === 'select' ? '🎯' : '✏️')}
             </span>
-          ) : interactionMode === 'select' ? (
-            <>
-              <strong>โหมดเลือก AI Radar (200m):</strong> คลิกบนหลังคาเพื่อดูรูปทรง <strong>Polygon</strong> อาคารเป้าหมาย และ <strong>Bounding Box</strong> อาคารรอบข้าง (สลับไปโหมดวาดเพื่อนับ ตร.ม. แปลงที่ดิน)
-            </>
-          ) : (
-            <>
-              <strong>โหมดวาดแปลงที่ดิน (Draw Tool):</strong> คลิกวาดตามขอบเขตที่ดินจริง (Polygon / Rectangle) เพื่อ <strong>นับ ตร.ม. ประเมินราคา</strong> โดยตรง
-            </>
-          )}
-        </span>
+            <span className="line-clamp-2 md:line-clamp-none text-slate-200">
+              {isVisionScanning ? (
+                <span className="text-cyan-300 font-semibold flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                  กำลังตรวจจับด้วย AI (อาคารเป้าหมาย: Polygon, รอบข้าง 200 ม.: Bounding Box)...
+                </span>
+              ) : interactionMode === 'select' ? (
+                <>
+                  <strong className="text-cyan-300">โหมดเลือก AI Radar (200m):</strong> แตะบนหลังคาเพื่อดู <strong>Polygon</strong> & <strong>BBox</strong> (หรือสลับไปโหมดวาด)
+                </>
+              ) : (
+                <>
+                  <strong className="text-blue-300">โหมดวาดแปลงที่ดิน:</strong> แตะวาดตามขอบเขตจริงเพื่อ <strong>นับ ตร.ม. ประเมินราคา</strong> โดยตรง
+                </>
+              )}
+            </span>
+          </div>
+
+          {/* Dismiss / Close Button */}
+          <button
+            type="button"
+            onClick={() => handleToggleHintBanner(false)}
+            className="p-1 -mr-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-all shrink-0 touch-manipulation cursor-pointer"
+            title="ปิดคำอธิบายนี้ (ซ่อนเพื่อไม่ให้บังหน้าจอ)"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ) : (
+        /* Small Re-open Pill Button when dismissed */
+        <button
+          type="button"
+          onClick={() => handleToggleHintBanner(true)}
+          className="absolute top-16 md:top-4 right-14 md:right-auto md:left-1/2 md:-translate-x-1/2 z-[1000] bg-slate-900/85 hover:bg-slate-800 backdrop-blur-md text-slate-400 hover:text-cyan-300 px-2.5 py-1 rounded-lg text-[10px] md:text-xs font-medium shadow-md border border-slate-700/80 hover:border-cyan-500/50 flex items-center gap-1.5 pointer-events-auto transition-all touch-manipulation cursor-pointer"
+          title="แตะเพื่อเปิดคำอธิบายวิธีใช้งานโหมด"
+        >
+          <span>{interactionMode === 'select' ? '🎯' : '✏️'}</span>
+          <span className="hidden sm:inline">วิธีใช้งาน</span>
+          <HelpCircle className="w-3 h-3 text-cyan-400" />
+        </button>
+      )}
+
+      {/* POI Categories & Filter Floating Panel - Positioned safely below Brand Header Badge */}
+      <div className="absolute top-[68px] sm:top-[76px] left-3 sm:left-4 z-[1000] flex flex-col items-start gap-1.5 pointer-events-auto">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowPOILegend(prev => !prev)}
+            className="bg-slate-900/90 hover:bg-slate-800 backdrop-blur-md text-slate-200 hover:text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-lg border border-slate-700/80 hover:border-cyan-500/50 flex items-center gap-2 transition-all cursor-pointer shadow-cyan-500/5 active:scale-95 touch-manipulation"
+            title="คลิกเพื่อเปิด/ปิด แผงหมวดหมู่ไอคอน POI และตัวกรองสถานที่"
+          >
+            <span className="text-sm">🏷️</span>
+            <span className="hidden sm:inline">หมวดหมู่ POI</span>
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
+              {dynamicPOIs.length}
+            </span>
+            {selectedPOICategory && (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="กำลังกรองหมวดหมู่อยู่" />
+            )}
+          </button>
+
+          {/* Fit Hat Yai District Boundary Quick Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof (window as any).__geoprice_fit_hatyai === 'function') {
+                (window as any).__geoprice_fit_hatyai();
+              }
+            }}
+            className="bg-slate-900/90 hover:bg-slate-800 backdrop-blur-md text-cyan-300 hover:text-white px-2.5 py-1.5 rounded-xl text-xs font-semibold shadow-lg border border-slate-700/80 hover:border-cyan-400/60 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 touch-manipulation"
+            title="ซูมแสดงภาพรวมขอบเขตอำเภอหาดใหญ่ทั้งหมด (852.8 ตร.กม.)"
+          >
+            <span>🏛️</span>
+            <span className="hidden sm:inline">เขตอำเภอหาดใหญ่</span>
+            <span className="text-[10px] text-slate-400 font-mono hidden md:inline">852.8 กม.²</span>
+          </button>
+        </div>
+
+        {/* Expandable POI Filter & Legend Tray */}
+        {showPOILegend && (
+          <div className="bg-slate-950/95 backdrop-blur-md border border-slate-800/90 rounded-2xl p-3 shadow-2xl max-w-[88vw] sm:max-w-md w-full animate-in fade-in zoom-in-95 duration-150 space-y-2.5">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm">🧭</span>
+                <span className="text-xs font-bold text-white">หมวดหมู่สถานที่สำคัญ (POI Categories)</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPOILegend(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="text-[11px] text-slate-400">
+              คลิกที่หมวดหมู่เพื่อกรองการแสดงผลบนแผนที่ ({dynamicPOIs.length} จุดรอบพื้นที่):
+            </div>
+
+            {/* Filter Pills Grid */}
+            <div className="flex flex-wrap gap-1.5 max-h-56 overflow-y-auto pr-1">
+              {/* All Filter */}
+              <button
+                type="button"
+                onClick={() => setSelectedPOICategory(null)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
+                  selectedPOICategory === null
+                    ? 'bg-cyan-500/25 text-cyan-300 border-cyan-400/60 shadow-sm'
+                    : 'bg-slate-900/60 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
+                }`}
+              >
+                <span>🌐</span>
+                <span>ทั้งหมด</span>
+                <span className="text-[10px] font-mono text-slate-400">({dynamicPOIs.length})</span>
+              </button>
+
+              {/* Individual Category Pills */}
+              {poiCategoryStats.map(({ meta, count }) => {
+                const isFilterActive = selectedPOICategory === meta.categoryKey;
+                return (
+                  <button
+                    key={meta.categoryKey}
+                    type="button"
+                    onClick={() => setSelectedPOICategory(isFilterActive ? null : meta.categoryKey)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
+                      isFilterActive
+                        ? 'ring-2 shadow-sm'
+                        : 'bg-slate-900/60 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
+                    }`}
+                    style={
+                      isFilterActive
+                        ? {
+                            backgroundColor: meta.bgLight,
+                            borderColor: meta.color,
+                            color: meta.color,
+                            boxShadow: `0 0 10px ${meta.color}35`,
+                          }
+                        : undefined
+                    }
+                  >
+                    <span>{meta.emoji}</span>
+                    <span>{meta.labelTh}</span>
+                    <span className="text-[10px] font-mono opacity-75">({count})</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Footer tip */}
+            <div className="text-[10px] text-slate-500 pt-1 flex items-center justify-between border-t border-slate-900">
+              <span>แตะที่หมุดบนแผนที่เพื่อดูข้อมูลรายละเอียด</span>
+              {selectedPOICategory && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedPOICategory(null)}
+                  className="text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
+                >
+                  ล้างตัวกรอง
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <MapContainer
@@ -502,9 +672,10 @@ export const MapComponent = ({
         zoomControl={true}
         className="w-full h-full"
       >
-        <MapResizer />
+        <MapResizer isSidebarOpen={isSidebarOpen} />
         <MapFlyTo center={flyTarget} />
         <MapClickHandler key={`click-handler-${interactionMode}`} enabled={interactionMode === 'select'} onMapClick={handleMapClick} />
+        <DistrictBoundaryActions />
 
         {/* Layer Controls: Base layers and Overlays */}
         <LayersControl position="topright">
@@ -535,43 +706,123 @@ export const MapComponent = ({
             />
           </LayersControl.BaseLayer>
 
-          {/* Overlay 1: ขอบเขตอำเภอหาดใหญ่ (Glowing Neon Boundary Line) */}
-          <LayersControl.Overlay checked name="ขอบเขตอำเภอหาดใหญ่ (เส้นเรืองแสง Neon)">
+          {/* Overlay 1: หน้ากากโฟกัสเฉพาะเขตอำเภอหาดใหญ่ (Inverted Outer Mask - Focus on Hat Yai District) */}
+          <LayersControl.Overlay checked name="🌑 หน้ากากโฟกัสอำเภอหาดใหญ่ (Outer Mask)">
             <LayerGroup>
               <GeoJSON
-                data={HAT_YAI_BOUNDARY_GEOJSON}
+                data={HAT_YAI_OUTER_MASK_GEOJSON}
                 interactive={false}
                 style={{
-                  color: '#00f2fe',
-                  weight: 6,
-                  fillOpacity: 0,
-                  className: 'hatyai-boundary-glow',
-                }}
-              />
-              <GeoJSON
-                data={HAT_YAI_BOUNDARY_GEOJSON}
-                interactive={false}
-                style={{
-                  color: '#ffffff',
-                  weight: 2,
-                  dashArray: '8, 8',
-                  fillOpacity: 0,
-                  className: 'hatyai-boundary-core',
+                  color: 'transparent',
+                  weight: 0,
+                  fillColor: '#020617',
+                  fillOpacity: 0.40,
+                  className: 'hatyai-outer-mask',
                 }}
               />
             </LayerGroup>
           </LayersControl.Overlay>
 
-          {/* Overlay 2: สถานที่สำคัญรอบแปลงที่ดิน (POIs & Landmarks) - ปิดไว้เริ่มต้นเพื่อภาพที่สะอาดตา ไร้ไอคอน */}
-          <LayersControl.Overlay name="สถานที่สำคัญรอบแปลง (POIs & Landmarks)">
-
+          {/* Overlay 2: เส้นแบ่งเขตแดนอำเภอหาดใหญ่ สไตล์เขตแดนประเทศ (Administrative Country Border) */}
+          <LayersControl.Overlay checked name="🗺️ เส้นแบ่งเขตแดนอำเภอหาดใหญ่ (Border Line)">
             <LayerGroup>
-              {dynamicPOIs.map((poi) => {
+              {/* Layer 1: Ambient Halo Glow */}
+              <GeoJSON
+                data={HAT_YAI_BOUNDARY_GEOJSON}
+                interactive={false}
+                style={{
+                  color: '#0284c7',
+                  weight: 7,
+                  opacity: 0.40,
+                  fillColor: '#38bdf8',
+                  fillOpacity: 0.03,
+                  className: 'hatyai-boundary-glow',
+                }}
+              />
+              {/* Layer 2: Sharp Solid Administrative Border */}
+              <GeoJSON
+                data={HAT_YAI_BOUNDARY_GEOJSON}
+                interactive={false}
+                style={{
+                  color: '#0369a1',
+                  weight: 3.5,
+                  opacity: 0.95,
+                  fillOpacity: 0,
+                  className: 'hatyai-boundary-solid',
+                }}
+              />
+              {/* Layer 3: White Dashed National Core Line (เหมือนเส้นแบ่งเขตแดนประเทศ) */}
+              <GeoJSON
+                data={HAT_YAI_BOUNDARY_GEOJSON}
+                interactive={true}
+                onEachFeature={(_feature, layer) => {
+                  layer.bindTooltip(
+                    `<div style="text-align: center; padding: 4px 8px;">
+                      <span style="color: #38bdf8; font-weight: 700; font-size: 12px;">🏛️ ขอบเขตการปกครอง: อำเภอหาดใหญ่</span><br/>
+                      <span style="color: #94a3b8; font-size: 10px;">จังหวัดสงขลา &bull; เนื้อที่ 852.8 ตร.กม. &bull; 13 ตำบล</span>
+                    </div>`,
+                    { sticky: true, className: 'hatyai-boundary-tooltip' }
+                  );
+                }}
+                style={{
+                  color: '#ffffff',
+                  weight: 1.5,
+                  dashArray: '8, 6',
+                  opacity: 1.0,
+                  fillOpacity: 0,
+                  className: 'hatyai-boundary-dashed',
+                }}
+              />
+            </LayerGroup>
+          </LayersControl.Overlay>
+
+          {/* Overlay 3: จุดศูนย์กลางและป้าย 13 ตำบลในอำเภอหาดใหญ่ (13 Subdistricts of Hat Yai) */}
+          <LayersControl.Overlay checked name="📍 ป้าย 13 ตำบลในอำเภอหาดใหญ่ (Subdistricts)">
+            <LayerGroup>
+              {HAT_YAI_SUBDISTRICTS.map((sd: any) => (
+                <Marker
+                  key={sd.id}
+                  position={[sd.lat, sd.lon]}
+                  icon={createSubdistrictIcon(sd.name_th)}
+                >
+                  <Popup className="custom-subdistrict-popup">
+                    <div className="p-2 space-y-1 min-w-[180px] text-xs font-sans">
+                      <div className="font-bold text-slate-800 flex items-center justify-between">
+                        <span>{sd.name_th}</span>
+                        <span className="text-[10px] text-slate-500 font-normal">{sd.name_en}</span>
+                      </div>
+                      <div className="text-[11px] text-indigo-600 font-medium">
+                        {sd.type}
+                      </div>
+                      <div className="text-[10px] text-slate-500 border-t border-slate-200 pt-1 flex items-center justify-between">
+                        <span>พิกัดศูนย์กลาง:</span>
+                        <span className="font-mono">{sd.lat.toFixed(4)}, {sd.lon.toFixed(4)}</span>
+                      </div>
+                    </div>
+                  </Popup>
+                </Marker>
+              ))}
+            </LayerGroup>
+          </LayersControl.Overlay>
+
+          {/* Overlay 2: สถานที่สำคัญรอบแปลงที่ดิน (POIs & Landmarks) */}
+          <LayersControl.Overlay checked name="สถานที่สำคัญรอบแปลง (POIs & Landmarks)">
+            <LayerGroup>
+              {filteredPOIs.map((poi) => {
                 const meta = getPOIMeta(poi);
-                const icon = createPOIIcon(meta.emoji, meta.color);
+                const isSelected = selectedPOICategory === meta.categoryKey || (nearestPOI?.id === poi.id);
+                const icon = createPOIIcon(meta, isSelected);
                 const categoryType = poi.tags?.amenity
                   ? `amenity: ${poi.tags.amenity}`
-                  : (poi.tags?.shop ? `shop: ${poi.tags.shop}` : poi.category);
+                  : (poi.tags?.shop ? `shop: ${poi.tags.shop}` : (poi.tags?.category_th || poi.category));
+
+                // Calculate straight-line distance to plot if active
+                let distToPlotM: number | null = null;
+                if (plotData?.latitude && plotData?.longitude) {
+                  const dLat = (poi.lat - plotData.latitude) * 111000;
+                  const dLon = (poi.lon - plotData.longitude) * 111000 * 0.99;
+                  distToPlotM = Math.round(Math.sqrt(dLat * dLat + dLon * dLon));
+                }
 
                 return (
                   <Marker
@@ -580,20 +831,47 @@ export const MapComponent = ({
                     icon={icon}
                   >
                     <Popup>
-                      <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#f8fafc', minWidth: '220px', lineHeight: 1.5 }}>
+                      <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#f8fafc', minWidth: '240px', lineHeight: 1.5 }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', borderBottom: '1px solid rgba(255, 255, 255, 0.15)', paddingBottom: '6px' }}>
-                          <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', padding: '2px 8px', borderRadius: '9999px', background: `${meta.color}35`, color: meta.color, border: `1px solid ${meta.color}80` }}>
-                            {meta.label}
+                          <span style={{ 
+                            fontSize: '11px', 
+                            fontWeight: 700, 
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            padding: '2px 8px', 
+                            borderRadius: '9999px', 
+                            background: meta.bgLight, 
+                            color: meta.color, 
+                            border: `1px solid ${meta.borderLight}` 
+                          }}>
+                            <span>{meta.emoji}</span>
+                            <span>{meta.labelTh}</span>
                           </span>
-                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>Overpass / OSM</span>
+                          <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                            {poi.tags?.badge || 'Overpass / OSM'}
+                          </span>
                         </div>
                         <div style={{ fontWeight: 700, fontSize: '14px', color: '#ffffff', marginBottom: '4px', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>
                           {poi.name}
                         </div>
                         <div style={{ color: '#cbd5e1', fontSize: '11px', marginBottom: '4px' }}>
-                          ประเภท: <strong style={{ color: '#38bdf8' }}>{categoryType}</strong>
+                          ประเภท: <strong style={{ color: meta.color }}>{categoryType}</strong>
                         </div>
-                        <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px', borderTop: '1px dashed rgba(255, 255, 255, 0.15)', paddingTop: '6px', fontFamily: 'monospace' }}>
+                        {poi.tags?.description && (
+                          <div style={{ color: '#94a3b8', fontSize: '11px', marginBottom: '6px', fontStyle: 'italic' }}>
+                            {poi.tags.description}
+                          </div>
+                        )}
+                        {distToPlotM !== null && (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(30, 41, 59, 0.7)', padding: '4px 8px', borderRadius: '6px', marginBottom: '6px', border: '1px solid rgba(56, 189, 248, 0.25)' }}>
+                            <span style={{ fontSize: '10px', color: '#94a3b8' }}>ระยะทางตรงถึงแปลง:</span>
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: '#38bdf8', fontFamily: 'monospace' }}>
+                              {distToPlotM.toLocaleString()} ม.
+                            </span>
+                          </div>
+                        )}
+                        <div style={{ fontSize: '10px', color: '#94a3b8', borderTop: '1px dashed rgba(255, 255, 255, 0.15)', paddingTop: '6px', fontFamily: 'monospace' }}>
                           พิกัด: {poi.lat.toFixed(5)}°N, {poi.lon.toFixed(5)}°E
                         </div>
                       </div>
@@ -610,14 +888,14 @@ export const MapComponent = ({
           <GeoJSON
             key={`surrounding-${plotData?.latitude ?? visionResult?.target_building?.center?.[0]}-${plotData?.longitude ?? visionResult?.target_building?.center?.[1]}-${visionResult?.surrounding_buildings?.length}`}
             data={surroundingGeoJSON as any}
-            style={{
-              color: '#00f2fe',
-              weight: 1.5,
+            style={() => ({
+              color: '#38bdf8',
+              weight: 1.6,
               fillColor: '#0284c7',
               fillOpacity: 0.18,
               dashArray: '4, 4',
               className: 'vision-surrounding-bbox',
-            }}
+            })}
             onEachFeature={(feature: any, layer: any) => {
               const p = feature.properties || {};
               layer.bindTooltip(`
@@ -638,109 +916,34 @@ export const MapComponent = ({
           />
         )}
 
-        {/* 2. Target Building Architectural Footprint (Emerald Neon Glow Polygon) - ONLY in Select Mode */}
-        {targetGeoJSON && interactionMode === 'select' && (
-          <GeoJSON
-            key={`target-bld-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}-${visionResult?.target_building?.area_sqm}`}
-            data={targetGeoJSON as any}
-            style={{
+        {/* 2. Target Building Architectural Footprint (Emerald Neon Glow Polygon - Always Rendered) */}
+        {targetBuildingLatLngs && targetBuildingLatLngs.length >= 3 && (
+          <LeafletPolygon
+            key={`target-bld-poly-${visionResult?.target_building?.center?.[0]}-${visionResult?.target_building?.center?.[1]}-${visionResult?.target_building?.area_sqm}-${targetBuildingLatLngs.length}`}
+            positions={targetBuildingLatLngs}
+            pathOptions={{
               color: '#10b981',
               weight: 3.5,
               fillColor: '#059669',
               fillOpacity: 0.60,
               className: 'vision-target-building-polygon',
             }}
-            onEachFeature={(feature: any, layer: any) => {
-              const p = feature.properties || {};
-              layer.bindTooltip(`
-                <div style="font-family: system-ui, sans-serif; font-size: 11px; line-height: 1.4;">
-                  <div style="font-weight: 700; color: #34d399;">🎯 อาคารเป้าหมาย (Polygon)</div>
-                  <div>มิติตัวอาคาร: <strong>${p.width_m} × ${p.length_m} ม.</strong> (${p.area_sqm} ตร.ม.)</div>
-                  <div>วิธี: ${p.method || 'OpenCV Vector Polygon'}</div>
-                </div>
-              `, { sticky: true });
-
-              layer.on('click', (e: any) => {
+            eventHandlers={{
+              click: (e: any) => {
                 if (interactionMode === 'select') {
                   L.DomEvent.stopPropagation(e);
                   handleMapClick(e.latlng.lat, e.latlng.lng);
                 }
-              });
+              },
             }}
-          />
-        )}
-
-        {/* 3. Floating Target Pin & Detail Popup - ONLY in Select Mode */}
-        {visionResult?.target_building && interactionMode === 'select' && (
-          <Marker
-            position={visionResult.target_building.center}
-            icon={createTargetPinIcon()}
           >
-            <Popup autoPan={false}>
-              <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#f8fafc', minWidth: '240px', lineHeight: 1.5 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', borderBottom: '1px solid rgba(255, 255, 255, 0.15)', paddingBottom: '6px' }}>
-                  <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', padding: '2px 8px', borderRadius: '9999px', background: '#10b98135', color: '#10b981', border: '1px solid #10b98180' }}>
-                    🎯 สิ่งปลูกสร้างเป้าหมาย
-                  </span>
-                  <span style={{ fontSize: '10px', color: '#34d399', fontWeight: 600 }}>
-                    AI {Math.round(visionResult.target_building.confidence * 100)}%
-                  </span>
-                </div>
-                <div style={{ fontWeight: 700, fontSize: '14px', color: '#ffffff', marginBottom: '2px' }}>
-                  {visionResult.target_building.road_name}
-                </div>
-                <div style={{ color: '#cbd5e1', fontSize: '11px', marginBottom: '6px' }}>
-                  {visionResult.target_building.zone_name}
-                </div>
-                {visionResult.target_building.valuation_source && (
-                  <div style={{
-                    fontSize: '10px',
-                    color: visionResult.target_building.source_badge === 'real_exact' ? '#34d399' : '#c084fc',
-                    background: visionResult.target_building.source_badge === 'real_exact' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(168, 85, 247, 0.15)',
-                    border: `1px solid ${visionResult.target_building.source_badge === 'real_exact' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(168, 85, 247, 0.4)'}`,
-                    padding: '3px 6px',
-                    borderRadius: '4px',
-                    marginBottom: '6px',
-                    fontWeight: 600,
-                  }}>
-                    {visionResult.target_building.source_badge === 'real_exact' ? '🟢 ' : '🟣 '}
-                    {visionResult.target_building.valuation_source}
-                  </div>
-                )}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', background: 'rgba(0,0,0,0.3)', padding: '6px 8px', borderRadius: '6px', margin: '6px 0' }}>
-                  <div>
-                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>ขนาดสิ่งปลูกสร้าง</div>
-                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#38bdf8' }}>
-                      {visionResult.target_building.area_sqm} ตร.ม.
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#64748b' }}>
-                      ({visionResult.target_building.area_wah} ตร.ว.)
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '10px', color: '#94a3b8' }}>
-                      {visionResult.target_building.source_badge === 'real_exact' ? 'ราคาประเมินจริง' : 'ราคาประเมินโมเดล'}
-                    </div>
-                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#f59e0b' }}>
-                      ฿{visionResult.target_building.price_per_wah.toLocaleString()}
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#64748b' }}>/ ตร.ว.</div>
-                  </div>
-                </div>
-                <div style={{ borderTop: '1px dashed rgba(255, 255, 255, 0.15)', paddingTop: '6px', marginTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>มูลค่าประเมินรวม:</span>
-                  <span style={{ fontSize: '15px', fontWeight: 800, color: '#10b981' }}>
-                    ฿{visionResult.target_building.total_estimated_price.toLocaleString()}
-                  </span>
-                </div>
-                {visionResult.target_building.parcel_total_value && (
-                  <div style={{ fontSize: '10px', color: '#34d399', marginTop: '4px', textAlign: 'right' }}>
-                    มูลค่าทั้งแปลงโฉนดจริง: ฿{visionResult.target_building.parcel_total_value.toLocaleString()}
-                  </div>
-                )}
+            <Tooltip sticky>
+              <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: '11px', lineHeight: '1.4' }}>
+                <div style={{ fontWeight: 700, color: '#34d399' }}>🎯 อาคารเป้าหมาย (Polygon)</div>
+                <div>วิธี: {visionResult?.target_building?.method === 'fastsam_ai' ? 'FastSAM Foundation AI (Zero-Shot)' : visionResult?.target_building?.method === 'superpixel_fluid' ? 'SuperPixel + Fluid Field (SLIC)' : (visionResult?.target_building?.method || 'AI Vector Polygon')}</div>
               </div>
-            </Popup>
-          </Marker>
+            </Tooltip>
+          </LeafletPolygon>
         )}
 
         {/* 4. AI Radar Scan Circle (200m Radius) */}
@@ -826,31 +1029,31 @@ export const MapComponent = ({
 
       {/* Floating Draw Toolbar when in Draw Mode */}
       {interactionMode === 'draw' && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-blue-500/40 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 max-w-[90vw] overflow-x-auto">
-          <div className="flex items-center gap-2 border-r border-slate-700/80 pr-3 shrink-0">
-            <span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse" />
-            <span className="text-xs font-bold text-white whitespace-nowrap">
-              โหมดวาดแปลงที่ดิน
+        <div className="absolute bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 backdrop-blur-md px-3 md:px-4 py-2 md:py-2.5 rounded-2xl border border-blue-500/40 shadow-2xl flex items-center gap-2 md:gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 max-w-[94vw] overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 md:gap-2 border-r border-slate-700/80 pr-2 md:pr-3 shrink-0">
+            <span className="w-2 h-2 md:w-2.5 md:h-2.5 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-[11px] md:text-xs font-bold text-white whitespace-nowrap">
+              โหมดวาด
             </span>
             {plotData && (
-              <span className="text-xs text-emerald-400 font-bold bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded-full font-mono whitespace-nowrap">
+              <span className="text-[10px] md:text-xs text-emerald-400 font-bold bg-emerald-950/80 border border-emerald-800/60 px-1.5 md:px-2 py-0.5 rounded-full font-mono whitespace-nowrap">
                 {plotData.areaSqm.toLocaleString()} ตร.ม.
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => {
                 const btn = document.querySelector<HTMLElement>('.leaflet-draw-draw-polygon');
                 if (btn) btn.click();
               }}
-              className="px-3 py-1.5 rounded-xl bg-blue-600/25 hover:bg-blue-600/40 text-blue-300 border border-blue-500/40 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer hover:scale-[1.02] shadow-sm whitespace-nowrap"
+              className="px-2.5 md:px-3 py-1.5 rounded-xl bg-blue-600/25 hover:bg-blue-600/40 text-blue-300 border border-blue-500/40 text-[11px] md:text-xs font-semibold flex items-center gap-1 md:gap-1.5 transition-all cursor-pointer hover:scale-[1.02] shadow-sm whitespace-nowrap active:scale-95 touch-manipulation"
               title="คลิกปักหมุดมุมแปลงหลายเหลี่ยม แล้วดับเบิลคลิกหรือคลิกจุดแรกเพื่อปิดรูป"
             >
               <Pencil className="w-3.5 h-3.5 text-blue-400" />
-              <span>วาดหลายเหลี่ยม</span>
+              <span>หลายเหลี่ยม</span>
             </button>
 
             <button
@@ -859,11 +1062,11 @@ export const MapComponent = ({
                 const btn = document.querySelector<HTMLElement>('.leaflet-draw-draw-rectangle');
                 if (btn) btn.click();
               }}
-              className="px-3 py-1.5 rounded-xl bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer hover:scale-[1.02] shadow-sm whitespace-nowrap"
+              className="px-2.5 md:px-3 py-1.5 rounded-xl bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 text-[11px] md:text-xs font-semibold flex items-center gap-1 md:gap-1.5 transition-all cursor-pointer hover:scale-[1.02] shadow-sm whitespace-nowrap active:scale-95 touch-manipulation"
               title="คลิกค้างแล้วลากเพื่อวาดแปลงสี่เหลี่ยม"
             >
               <Square className="w-3.5 h-3.5 text-emerald-400" />
-              <span>วาดสี่เหลี่ยม</span>
+              <span>สี่เหลี่ยม</span>
             </button>
 
             <button
@@ -873,7 +1076,7 @@ export const MapComponent = ({
                 if (btn) btn.click();
               }}
               disabled={!plotData}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+              className={`px-2.5 md:px-3 py-1.5 rounded-xl border text-[11px] md:text-xs font-semibold flex items-center gap-1 md:gap-1.5 transition-all whitespace-nowrap active:scale-95 touch-manipulation ${
                 plotData
                   ? 'bg-amber-600/25 hover:bg-amber-600/40 text-amber-300 border-amber-500/40 cursor-pointer hover:scale-[1.02]'
                   : 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed opacity-50'
@@ -881,7 +1084,7 @@ export const MapComponent = ({
               title="ลากจุดมุมเพื่อปรับแต่งขอบเขตแปลง"
             >
               <Scissors className="w-3.5 h-3.5 text-amber-400" />
-              <span>ปรับแต่งมุม</span>
+              <span>ปรับแต่ง</span>
             </button>
 
             <button
@@ -895,7 +1098,7 @@ export const MapComponent = ({
                 onVisionResult?.(null);
               }}
               disabled={!plotData}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+              className={`px-2.5 md:px-3 py-1.5 rounded-xl border text-[11px] md:text-xs font-semibold flex items-center gap-1 md:gap-1.5 transition-all whitespace-nowrap active:scale-95 touch-manipulation ${
                 plotData
                   ? 'bg-rose-600/25 hover:bg-rose-600/40 text-rose-300 border-rose-500/40 cursor-pointer hover:scale-[1.02]'
                   : 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed opacity-50'
@@ -903,14 +1106,14 @@ export const MapComponent = ({
               title="ล้างแปลงที่ดินที่วาด"
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-              <span>ล้างแปลง</span>
+              <span>ล้าง</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Map watermark / location tag */}
-      <div className="absolute bottom-2 left-4 z-[1000] bg-slate-900/80 backdrop-blur text-white px-3 py-1 rounded-lg text-[11px] font-medium shadow-md border border-cyan-500/30 flex items-center gap-2">
+      {/* Map watermark / location tag (Desktop / Tablet only) */}
+      <div className="hidden md:flex absolute bottom-2 left-4 z-[1000] bg-slate-900/80 backdrop-blur text-white px-3 py-1 rounded-lg text-[11px] font-medium shadow-md border border-cyan-500/30 items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-sm shadow-cyan-400"></span>
         <span>ระบบประเมินราคาที่ดิน GeoPrice: อ.หาดใหญ่ จ.สงขลา</span>
       </div>

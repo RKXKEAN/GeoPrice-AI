@@ -18,7 +18,7 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "password123")
 BUCKET_NAME = "images"
-ZOOM = 17
+ZOOM = 19
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

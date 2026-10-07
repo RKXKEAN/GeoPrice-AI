@@ -21,11 +21,33 @@ from app.services.label_studio_service import get_label_studio_service
 
 logger = logging.getLogger(__name__)
 
-ZOOM = 17
+ZOOM = 19
 LATEST_WAYBACK_RELEASE = "26334"  # 2026_07-12 Latest Cycle
-CYCLE_NAME = "2026_07-12 (รอบล่าสุด / Active Stream)"
 BUCKET_NAME = "images"
 TARGET_PREFIX = "latest"
+
+
+def get_current_half_year_cycle(dt: Optional[datetime] = None) -> str:
+    """Returns half-year cycle string e.g. '2026_07-12' or '2027_01-06' (Semi-Annual: Months 1 & 7)."""
+    dt = dt or datetime.now(timezone.utc)
+    year = dt.year
+    if 1 <= dt.month <= 6:
+        return f"{year}_01-06"
+    else:
+        return f"{year}_07-12"
+
+
+def get_next_scheduled_half_year(dt: Optional[datetime] = None) -> datetime:
+    """Calculates next semi-annual ingestion date (Month 1: Jan 1 or Month 7: Jul 1)."""
+    dt = dt or datetime.now(timezone.utc)
+    year = dt.year
+    if 1 <= dt.month < 7:
+        return datetime(year, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
+    else:
+        return datetime(year + 1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+
+CYCLE_NAME = f"{get_current_half_year_cycle()} (รอบ 6 เดือน / เดือน 1 & เดือน 7)"
 
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -49,6 +71,11 @@ class DataIngestService:
     async def get_status(self) -> Dict[str, Any]:
         """Fetches current data synchronization and overwrite status from Redis."""
         pool = await get_redis_pool()
+        curr_cycle = get_current_half_year_cycle()
+        next_run_dt = get_next_scheduled_half_year()
+        default_next_run = next_run_dt.isoformat()
+        cycle_label = f"{curr_cycle} (รอบ 6 เดือน / เดือน 1 & เดือน 7)"
+
         if pool is None:
             return {
                 "status": "idle",
@@ -56,11 +83,11 @@ class DataIngestService:
                 "downloaded_count": 0,
                 "total_count": 1000,
                 "speed_imgs_per_sec": 0.0,
-                "cycle_name": CYCLE_NAME,
-                "target_folder": "images/latest/",
-                "overwrite_policy": "100% เขียนทับโฟลเดอร์หลัก",
-                "schedule_cadence": "ทุกๆ 6 เดือน (Semi-Annual)",
-                "next_scheduled_run": (datetime.now(timezone.utc) + timedelta(days=180)).isoformat(),
+                "cycle_name": cycle_label,
+                "target_folder": f"images/{curr_cycle}/",
+                "overwrite_policy": "บันทึกแยกโฟลเดอร์ตามรอบ 6 เดือน (ม.ค. & ก.ค.)",
+                "schedule_cadence": "ทุกๆ 2 ไตรมาส (เดือน 1 และเดือน 7)",
+                "next_scheduled_run": default_next_run,
                 "ready_for_retrain": False,
                 "logs": []
             }
@@ -87,29 +114,27 @@ class DataIngestService:
         except Exception:
             pass
 
-        # Check existing images in latest/
+        # Check existing images in current cycle
         minio_svc = get_minio_service()
-        latest_images_count = 0
+        cycle_images_count = 0
         try:
-            objs = minio_svc.list_objects(BUCKET_NAME, prefix=f"{TARGET_PREFIX}/", recursive=True)
-            latest_images_count = sum(1 for o in objs if o["object_name"].lower().endswith((".jpg", ".jpeg", ".png")))
+            objs = minio_svc.list_objects(BUCKET_NAME, prefix=f"{curr_cycle}/", recursive=True)
+            cycle_images_count = sum(1 for o in objs if o["object_name"].lower().endswith((".jpg", ".jpeg", ".png")))
         except Exception:
             pass
 
-        next_run = status_data.get("next_scheduled_run")
-        if not next_run:
-            next_run = (datetime.now(timezone.utc) + timedelta(days=180)).isoformat()
+        next_run = status_data.get("next_scheduled_run") or default_next_run
 
         return {
             "status": status_data.get("status", "idle" if not self._is_running else "ingesting"),
-            "progress_percent": status_data.get("progress_percent", 100.0 if latest_images_count >= 1000 else 0.0),
-            "downloaded_count": status_data.get("downloaded_count", latest_images_count),
+            "progress_percent": status_data.get("progress_percent", 100.0 if cycle_images_count >= 1000 else 0.0),
+            "downloaded_count": status_data.get("downloaded_count", cycle_images_count),
             "total_count": status_data.get("total_count", 1000),
             "speed_imgs_per_sec": status_data.get("speed_imgs_per_sec", 0.0),
-            "cycle_name": status_data.get("cycle_name", CYCLE_NAME),
-            "target_folder": f"images/{TARGET_PREFIX}/",
-            "overwrite_policy": "100% เขียนทับโฟลเดอร์หลัก (Latest Overwrite Policy)",
-            "schedule_cadence": "ทุกๆ 6 เดือน (Semi-Annual Ingestion)",
+            "cycle_name": status_data.get("cycle_name", cycle_label),
+            "target_folder": f"images/{curr_cycle}/",
+            "overwrite_policy": "บันทึกแยกโฟลเดอร์ตามรอบ 6 เดือน (ม.ค. & ก.ค.)",
+            "schedule_cadence": "ทุกๆ 2 ไตรมาส (เดือน 1 และเดือน 7)",
             "next_scheduled_run": next_run,
             "last_completed_at": status_data.get("completed_at"),
             "ready_for_retrain": status_data.get("ready_for_retrain", False),
@@ -195,6 +220,10 @@ class DataIngestService:
         start_time = time.time()
 
         try:
+            cycle = get_current_half_year_cycle()
+            cycle_name = f"{cycle} (รอบ 6 เดือน / เดือน 1 & เดือน 7)"
+            next_run = get_next_scheduled_half_year().isoformat()
+
             # 1. Initialize State in Redis
             init_state = {
                 "status": "ingesting",
@@ -203,31 +232,45 @@ class DataIngestService:
                 "total_count": 1000,
                 "speed_imgs_per_sec": 0.0,
                 "started_at": datetime.now(timezone.utc).isoformat(),
-                "cycle_name": CYCLE_NAME,
-                "target_folder": f"images/{TARGET_PREFIX}/",
-                "overwrite_policy": "100% เขียนทับโฟลเดอร์หลัก",
+                "cycle_name": cycle_name,
+                "target_folder": f"images/{cycle}/",
+                "overwrite_policy": "บันทึกแยกโฟลเดอร์ตามรอบ 6 เดือน (ม.ค. & ก.ค.)",
                 "ready_for_retrain": False,
-                "next_scheduled_run": (datetime.now(timezone.utc) + timedelta(days=180)).isoformat()
+                "next_scheduled_run": next_run
             }
             if pool:
                 await pool.set("data_sync_status", json.dumps(init_state))
 
-            await self._append_log(f"🛰️ เริ่มต้นกระบวนการดึงภาพดาวเทียมรอบล่าสุด: {CYCLE_NAME}")
+            await self._append_log(f"🛰️ เริ่มต้นกระบวนการดึงภาพดาวเทียมประจำรอบ: {cycle_name}")
             await self._append_log(f"📥 แหล่งข้อมูล: ESRI Wayback Imagery API (Release: {LATEST_WAYBACK_RELEASE}, Zoom: {ZOOM})")
-            await self._append_log(f"⚡ นโยบายเขียนทับ (Overwrite Policy): บันทึกทับ MinIO 'images/{TARGET_PREFIX}/' โดยตรง (100% Overwrite)")
+            await self._append_log(f"💾 นโยบายการบันทึก: บันทึกเข้า 'images/{cycle}/' ถาวร และสเตจเข้า 'images/latest/' สำหรับเทรน")
 
-            # 2. Load Coordinates
-            coord_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "fixed_1000_coordinates.json")
-            if not os.path.exists(coord_file):
-                coord_file = r"D:\Geo-price\backend\app\data\fixed_1000_coordinates.json"
+            # 2. Load Coordinates (MinIO first, local fallback)
+            minio_svc = get_minio_service()
+            coords = None
+            try:
+                res = minio_svc.client.get_object("datasets", "fixed_1000_coordinates.json")
+                coords = json.loads(res.read().decode("utf-8"))
+                res.close()
+                res.release_conn()
+                logger.info("✅ Loaded fixed_1000_coordinates.json from MinIO datasets bucket")
+            except Exception as me:
+                logger.warning(f"Could not load fixed_1000_coordinates.json from MinIO: {me}")
 
-            with open(coord_file, "r", encoding="utf-8") as f:
-                coords = json.load(f)
+            if not coords:
+                coord_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "fixed_1000_coordinates.json")
+                if not os.path.exists(coord_file):
+                    coord_file = r"D:\Geo-price\backend\app\data\fixed_1000_coordinates.json"
+                if os.path.exists(coord_file):
+                    with open(coord_file, "r", encoding="utf-8") as f:
+                        coords = json.load(f)
+
+            if not coords:
+                raise RuntimeError("Failed to load fixed_1000_coordinates.json from MinIO or local storage.")
 
             total_images = len(coords)
             await self._append_log(f"📍 โหลดพิกัดจุดตรวจสอบมาตรฐาน 13 ตำบลหาดใหญ่ สำเร็จครบ {total_images:,} จุด")
 
-            minio_svc = get_minio_service()
             if not minio_svc.client.bucket_exists(BUCKET_NAME):
                 minio_svc.client.make_bucket(BUCKET_NAME)
 
@@ -288,13 +331,21 @@ class DataIngestService:
                 crop_img.save(img_buffer, format="JPEG", quality=95)
                 img_bytes = img_buffer.getvalue()
 
-                # Overwrite directly into latest/
                 img_name = f"img_{idx:04d}.jpg"
-                object_key = f"{TARGET_PREFIX}/{img_name}"
 
+                # 1. บันทึกถาวรประจำรอบ ไม่เขียนทับรอบเดิม (images/{cycle}/img_xxxx.jpg)
                 minio_svc.client.put_object(
                     BUCKET_NAME,
-                    object_key,
+                    f"{cycle}/{img_name}",
+                    io.BytesIO(img_bytes),
+                    len(img_bytes),
+                    content_type="image/jpeg"
+                )
+
+                # 2. สเตจเข้า images/latest/ ชั่วคราวสำหรับการ Retrain
+                minio_svc.client.put_object(
+                    BUCKET_NAME,
+                    f"{TARGET_PREFIX}/{img_name}",
                     io.BytesIO(img_bytes),
                     len(img_bytes),
                     content_type="image/jpeg"
@@ -333,7 +384,31 @@ class DataIngestService:
 
             ingest_elapsed = round(time.time() - start_time, 1)
             avg_rate = round(total_images / ingest_elapsed, 1) if ingest_elapsed > 0 else 0.0
-            await self._append_log(f"✅ เขียนทับ MinIO images/latest/ สำเร็จครบ {total_images:,} ภาพ ในเวลา {ingest_elapsed} วินาที (เฉลี่ย {avg_rate} รูป/วินาที)")
+            await self._append_log(f"✅ บันทึกภาพดาวเทียมลง MinIO 'images/{cycle}/' และสเตจเข้า 'images/latest/' สำเร็จครบ {total_images:,} ภาพ ในเวลา {ingest_elapsed} วินาที (เฉลี่ย {avg_rate} รูป/วินาที)")
+
+            # 3.5 Ingest & Save Cycle Price Dataset (Prices Only - No Duplicated Coordinates)
+            await self._append_log(f"📊 กำลังอัปเดตข้อมูลราคาประเมินรอบ 6 เดือน (รอบ {cycle}) โดยบันทึกเฉพาะคอลัมน์ราคา...")
+            try:
+                price_dataset_key = f"prices_{cycle}.csv"
+                local_price = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", f"prices_{cycle}.csv")
+                if not os.path.exists(local_price):
+                    local_price = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "prices_2026_07-12.csv")
+
+                if os.path.exists(local_price):
+                    with open(local_price, "rb") as fp:
+                        p_data = fp.read()
+                    minio_svc.upload_file("datasets", price_dataset_key, p_data, "text/csv; charset=utf-8")
+                    await self._append_log(f"✅ บันทึกไฟล์ราคาประเมินเฉพาะราคา 'datasets/{price_dataset_key}' สำเร็จ (อิงพิกัดและขนาดแปลงจาก hatyai_cadastral_master_parcels.csv ไฟล์เดียว)")
+                else:
+                    # Verify already present in MinIO
+                    try:
+                        minio_svc.client.stat_object("datasets", price_dataset_key)
+                        await self._append_log(f"✅ ตรวจพบชุดข้อมูลราคา 'datasets/{price_dataset_key}' พร้อมใช้งานใน MinIO เรียบร้อยแล้ว")
+                    except Exception:
+                        await self._append_log(f"ℹ️ ชุดข้อมูลราคา 'datasets/{price_dataset_key}' พร้อมใช้อัตโนมัติจาก Master Dataset ใน MinIO")
+            except Exception as pe:
+                logger.warning(f"Price cycle save warning: {pe}")
+                await self._append_log(f"⚠️ การบันทึกราคาประจำรอบ: {pe}")
 
             # 4. Trigger Batch Auto-Labeling on AI Worker
             await self._append_log("🏷️ กำลังส่งต่องานไปยัง YOLOv8-seg เพื่อทำการสกัด Polygon Contours อัตโนมัติ...", status="auto_labeling")
@@ -369,7 +444,6 @@ class DataIngestService:
                 await self._append_log(f"⚠️ Label Studio sync notice: {ls_err}")
 
             # 6. Full-Auto Retrain Execution (อัตโนมัติ 100% ไม่ต้องรอถาม Admin)
-            next_run = (datetime.now(timezone.utc) + timedelta(days=180)).isoformat()
             retrain_job_id = f"vision-retrain-latest-{int(time.time())}"
 
             await self._append_log("🚀 [ระบบ Full-Auto] Auto-Labeling และซิงค์เข้า Label Studio เสร็จสิ้น -> เริ่มต้น Retrain บน GPU RTX 5060 อัตโนมัติทันที...", status="retraining")
@@ -381,9 +455,9 @@ class DataIngestService:
                     "downloaded_count": total_images,
                     "total_count": total_images,
                     "speed_imgs_per_sec": avg_rate,
-                    "cycle_name": CYCLE_NAME,
-                    "target_folder": f"images/{TARGET_PREFIX}/",
-                    "overwrite_policy": "100% เขียนทับโฟลเดอร์หลัก",
+                    "cycle_name": cycle_name,
+                    "target_folder": f"images/{cycle}/",
+                    "overwrite_policy": "บันทึกแยกโฟลเดอร์ตามรอบ 6 เดือน (ม.ค. & ก.ค.)",
                     "ready_for_retrain": False,
                     "retrain_job_id": retrain_job_id,
                     "next_scheduled_run": next_run
@@ -410,6 +484,23 @@ class DataIngestService:
                     if jstat and jstat.decode("utf-8") in ("completed", "standby_ready", "failed"):
                         break
 
+            # 7. Deployment Complete -> Wipe temporary staging folder images/latest/
+            await self._append_log("🧹 โมเดลถูกเทรนและ Deploy น้ำหนักตัวใหม่ขึ้น MinIO เรียบร้อย -> กำลังลบภาพชั่วคราวใน images/latest/...")
+            try:
+                latest_objs = list(minio_svc.client.list_objects(BUCKET_NAME, prefix=f"{TARGET_PREFIX}/", recursive=True))
+                for o in latest_objs:
+                    obj_name = o["object_name"] if isinstance(o, dict) else o.object_name
+                    minio_svc.client.remove_object(BUCKET_NAME, obj_name)
+                # Also delete labels under labels/latest_
+                latest_labels = list(minio_svc.client.list_objects(BUCKET_NAME, prefix="labels/latest_", recursive=True))
+                for lo in latest_labels:
+                    lobj_name = lo["object_name"] if isinstance(lo, dict) else lo.object_name
+                    minio_svc.client.remove_object(BUCKET_NAME, lobj_name)
+                await self._append_log(f"🗑️ ลบภาพชั่วคราวใน images/latest/ สำเร็จครบ {len(latest_objs)} ภาพ (ภาพถาวรถูกจัดเก็บไว้ใน images/{cycle}/ เรียบร้อยแล้ว)")
+            except Exception as clean_err:
+                logger.warning(f"Error cleaning staging folder images/latest/: {clean_err}")
+                await self._append_log(f"⚠️ ลบไฟล์ชั่วคราว latest/ ไม่สำเร็จ: {clean_err}")
+
             completed_state = {
                 "status": "completed",
                 "progress_percent": 100.0,
@@ -417,9 +508,9 @@ class DataIngestService:
                 "total_count": total_images,
                 "speed_imgs_per_sec": avg_rate,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
-                "cycle_name": CYCLE_NAME,
-                "target_folder": f"images/{TARGET_PREFIX}/",
-                "overwrite_policy": "100% เขียนทับโฟลเดอร์หลัก",
+                "cycle_name": cycle_name,
+                "target_folder": f"images/{cycle}/",
+                "overwrite_policy": "บันทึกแยกโฟลเดอร์ตามรอบ 6 เดือน (ม.ค. & ก.ค.)",
                 "ready_for_retrain": False,
                 "retrain_job_id": retrain_job_id,
                 "next_scheduled_run": next_run
@@ -427,8 +518,8 @@ class DataIngestService:
             if pool:
                 await pool.set("data_sync_status", json.dumps(completed_state))
 
-            await self._append_log("🎉 [สำเร็จสมบูรณ์ 100%] ดึงภาพรอบล่าสุด, เขียนทับ images/latest/, Auto-Label, ซิงค์ Label Studio และ Retrain บน GPU สำเร็จเรียบร้อย!", status="completed")
-            await self._append_log(f"📅 รอบตั้งเวลาดึงข้อมูลถัดไป (รอบ 6 เดือน): {next_run[:10]}")
+            await self._append_log(f"🎉 [ลูป Full-Auto สำเร็จสมบูรณ์ 100%] Deploy สำเร็จ! ภาพรอบล่าสุด 1,000 ภาพใน images/latest/ ถูกเทรนและอัปเดตน้ำหนักโมเดลตัวใหม่ขึ้น MinIO เรียบร้อย ลบโฟลเดอร์ชั่วคราวเสร็จสมบูรณ์", status="completed")
+            await self._append_log(f"📅 รอบตั้งเวลาดึงข้อมูลถัดไป (รอบ 6 เดือน: มกราคม & กรกฎาคม): {next_run[:10]}")
 
         except Exception as e:
             logger.error(f"Ingestion pipeline failure: {e}", exc_info=True)

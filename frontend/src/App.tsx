@@ -2,33 +2,30 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { 
   MapPin, 
   Layers, 
-  Clock, 
   Sparkles, 
   CheckCircle2, 
-  AlertCircle, 
   RotateCcw,
   Building2,
-  TrendingUp,
-  Cpu,
   Radar,
   Navigation,
-  Radio,
   Pencil,
   Sliders,
-  BarChart3,
-  ChevronDown,
-  ChevronUp
+  X,
+  ArrowLeft,
+  ChevronRight
 } from 'lucide-react';
 
 import * as turf from '@turf/turf';
 import hatYaiLandmarksData from './data/hatyai_landmarks.json';
 import { MapComponent } from './components/MapComponent';
 import type { DrawnPlotData } from './components/MapComponent';
+import { FuturePredictionPanel } from './components/FuturePredictionPanel';
+import { getPOIMeta } from './utils/poiMeta';
 import { AdminLogin } from './components/AdminLogin';
 import { AdminDashboard } from './components/AdminDashboard';
 import type { AdminUser } from './services/adminApi';
 import { submitPricePrediction, getPredictionStatus, scanVisionRadar } from './services/api';
-import { resolveZoneAppraisalRate } from './services/zonePricing';
+import { resolveZoneAppraisalRate, formatThaiLandAreaStr } from './services/zonePricing';
 import type {
   PredictionJobResponse, 
   PredictionResult,
@@ -79,10 +76,14 @@ export function App() {
   // Mode state: 'draw' | 'select' (default to AI Vision Radar select mode)
   const [interactionMode, setInteractionMode] = useState<'draw' | 'select'>('select');
 
+  // Responsive UI states (Mobile / iPad / Desktop)
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
+
   // Plot state
   const [plotData, setPlotData] = useState<DrawnPlotData | null>(null);
   const [plotName, setPlotName] = useState('พื้นที่ตรวจสอบ GeoPrice');
-  const [landUseZone, setLandUseZone] = useState('สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)');
+  const [showPredictionPanel, setShowPredictionPanel] = useState<boolean>(false);
   const [predictionYears, setPredictionYears] = useState(1);
   const [selectedModel, setSelectedModel] = useState<'xgboost' | 'arimax'>('xgboost');
   const [forceModel, setForceModel] = useState(false);
@@ -109,6 +110,7 @@ export function App() {
   const handlePlotDrawn = useCallback((data: DrawnPlotData | null) => {
     if (!data) {
       setPlotData(null);
+      setShowPredictionPanel(false);
       return;
     }
     setPlotData(data);
@@ -118,10 +120,12 @@ export function App() {
     setSubmissionError(null);
     setVisionResult(null);
     setScannedBuildings(null);
+    setShowPredictionPanel(true);
   }, []);
 
   const handlePlotCleared = useCallback(() => {
     setPlotData(null);
+    setShowPredictionPanel(false);
     setActiveJob(null);
     setJobResult(null);
     setScannedBuildings(null);
@@ -158,8 +162,8 @@ export function App() {
         const tb = res.target_building;
         const alreadyIncluded = allSurrounding.some(b => b.id === tb.id);
         if (!alreadyIncluded) {
-          const lats = tb.coordinates.map((c: any) => c[0]);
-          const lngs = tb.coordinates.map((c: any) => c[1]);
+          const lngs = tb.coordinates.map((c: any) => Number(c[0]));
+          const lats = tb.coordinates.map((c: any) => Number(c[1]));
           allSurrounding.push({
             id: tb.id || 'BLD-ENV',
             confidence: tb.confidence,
@@ -171,11 +175,11 @@ export function App() {
             center: tb.center || [plotData.latitude, plotData.longitude],
             shape_type: 'bbox',
             coordinates: [
-              [Math.min(...lats), Math.min(...lngs)],
-              [Math.max(...lats), Math.min(...lngs)],
-              [Math.max(...lats), Math.max(...lngs)],
-              [Math.min(...lats), Math.max(...lngs)],
-              [Math.min(...lats), Math.min(...lngs)]
+              [Math.min(...lngs), Math.min(...lats)],
+              [Math.max(...lngs), Math.min(...lats)],
+              [Math.max(...lngs), Math.max(...lats)],
+              [Math.min(...lngs), Math.max(...lats)],
+              [Math.min(...lngs), Math.min(...lats)]
             ]
           });
         }
@@ -362,9 +366,11 @@ export function App() {
   const handlePredict = async () => {
     if (!plotData) {
       setSubmissionError('กรุณาวาดแปลงที่ดิน (Polygon หรือ Rectangle) บนแผนที่ก่อนประเมินราคา');
+      setMobileDrawerOpen(true);
       return;
     }
 
+    setMobileDrawerOpen(true);
     setLoading(true);
     setSubmissionError(null);
     setActiveJob(null);
@@ -387,7 +393,7 @@ export function App() {
         longitude: plotData.longitude,
         geometry: plotData.geometry,
         area_size_sqm: plotData.areaSqm,
-        land_use_zone: landUseZone,
+        land_use_zone: 'สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)',
         selected_model: selectedModel,
         force_model: forceModel,
         features: {
@@ -525,22 +531,22 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <div className="flex flex-col lg:flex-row h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans relative">
       {/* Left / Main Section: Interactive Map */}
-      <div className="flex-1 relative h-full">
+      <div className="flex-1 relative h-full w-full">
         {/* Top Floating App Brand Badge */}
-        <div className="absolute top-4 left-4 z-[1000] flex items-center gap-3 bg-slate-900/90 backdrop-blur-md px-4 py-2.5 rounded-xl border border-slate-800 shadow-xl">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Building2 className="w-5 h-5 text-white" />
+        <div className="absolute top-3 left-3 sm:top-4 sm:left-4 z-[1000] flex items-center gap-2 sm:gap-3 bg-slate-900/90 backdrop-blur-md px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border border-slate-800 shadow-xl max-w-[calc(100vw-80px)] sm:max-w-none">
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 shrink-0">
+            <Building2 className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
           </div>
-          <div>
-            <h1 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="text-sm sm:text-base font-bold text-white tracking-wide flex items-center gap-1.5 sm:gap-2 truncate">
               GeoPrice AI
-              <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
+              <span className="hidden xs:inline-block text-[9px] sm:text-[10px] font-semibold tracking-wider uppercase px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
                 PoC Hat Yai
               </span>
             </h1>
-            <p className="text-xs text-slate-400">ระบบประเมินราคาที่ดินและศักยภาพอัจฉริยะ</p>
+            <p className="text-[10px] sm:text-xs text-slate-400 truncate hidden sm:block">ระบบประเมินราคาที่ดินและศักยภาพอัจฉริยะ</p>
           </div>
 
           {/* Admin MLOps Console Shortcut Button */}
@@ -549,13 +555,44 @@ export function App() {
               window.history.pushState({}, '', '/admin');
               setCurrentView('admin');
             }}
-            className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold shadow-md transition-all cursor-pointer"
+            className="ml-1 sm:ml-2 flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold shadow-md transition-all cursor-pointer shrink-0"
             title="เปิดแผงควบคุมดูแลระบบ MLOps (Admin Console)"
           >
             <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-            <span>⚙️ Admin MLOps</span>
+            <span className="hidden sm:inline">⚙️ Admin MLOps</span>
+            <span className="sm:hidden">⚙️ Admin</span>
           </button>
         </div>
+
+        {/* Desktop / iPad Landscape Toggle Button (When Sidebar is collapsed) */}
+        {!desktopSidebarOpen && (
+          <button
+            onClick={() => setDesktopSidebarOpen(true)}
+            className="hidden lg:flex absolute top-4 right-4 z-[1000] items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-700 shadow-xl text-xs font-semibold text-white hover:bg-slate-800 transition-all hover:scale-105"
+            title="เปิดแผงควบคุมและประเมินราคา"
+          >
+            <Layers className="w-4 h-4 text-blue-400" />
+            <span>เปิดแผงประเมินราคา</span>
+          </button>
+        )}
+
+        {/* Floating Future Price Prediction Button (Desktop & iPad) */}
+        {plotData && !showPredictionPanel && (
+          <button
+            type="button"
+            onClick={() => setShowPredictionPanel(true)}
+            className="hidden md:flex absolute top-4 right-14 lg:right-52 z-[1000] items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 text-white border border-indigo-400/40 text-xs font-semibold shadow-xl shadow-purple-500/25 hover:scale-105 active:scale-95 transition-all cursor-pointer animate-in fade-in duration-200"
+            title="เปิดแผงคาดการณ์ราคาอนาคต AI"
+          >
+            <Sparkles className="w-4 h-4 text-purple-200" />
+            <span>คาดการณ์อนาคต (AI)</span>
+            {jobResult?.status === 'completed' ? (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400" />
+            ) : (
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            )}
+          </button>
+        )}
 
         {/* Map Rendering with 200m Radar Scan & Visual Connection Line */}
         <MapComponent 
@@ -566,38 +603,193 @@ export function App() {
           nearestPOI={nearestPOI}
           interactionMode={interactionMode}
           visionResult={visionResult}
+          isSidebarOpen={desktopSidebarOpen}
           onVisionResult={(res) => {
             setVisionResult(res);
-            if (res) {
+            if (res?.target_building?.coordinates?.length) {
+              const tb = res.target_building;
+              const geoJson: any = {
+                type: 'Polygon',
+                coordinates: [tb.coordinates],
+              };
+              const calculatedAreaSqm = Math.round(Number(tb.area_sqm) * 100) / 100;
+              const newPlot: DrawnPlotData = {
+                geometry: geoJson,
+                latitude: tb.center?.[0] || 0,
+                longitude: tb.center?.[1] || 0,
+                areaSqm: calculatedAreaSqm,
+                priceRef: tb.price_per_wah,
+                plotName: `แปลงอาคาร ${tb.road_name || 'AI ตรวจจับ'}`,
+                source: 'draw',
+              };
+              setPlotData(newPlot);
+              setPlotName(`แปลงอาคาร ${tb.road_name || 'AI ตรวจจับ'}`);
+              setShowPredictionPanel(true);
+            } else if (res) {
               setPlotData(null);
+              setShowPredictionPanel(false);
             }
           }}
           isVisionScanning={isVisionScanning}
           setIsVisionScanning={setIsVisionScanning}
         />
+
+        {/* Mobile / iPad Floating Bottom Action Bar (< lg) */}
+        <div className="lg:hidden absolute bottom-3 left-3 right-3 z-[1000] pointer-events-auto">
+          <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 p-2.5 sm:p-3 rounded-2xl shadow-2xl flex items-center justify-between gap-2 text-xs">
+            {/* Status / Plot Info */}
+            <div className="flex items-center gap-2 min-w-0">
+              {plotData ? (
+                <div className="flex items-center gap-2 truncate">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                  <div className="truncate">
+                    <span className="font-bold text-white block truncate text-[11px] sm:text-xs">
+                      {plotData.plotName || 'แปลงที่ดิน'}
+                    </span>
+                    <span className="text-[10px] sm:text-[11px] text-emerald-400 font-mono font-medium truncate block">
+                      📐 {plotData.areaSqm.toLocaleString()} ตร.ม. ({formatThaiLandAreaStr(plotData.areaSqm)})
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-slate-400 truncate">
+                  <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span className="text-[10px] sm:text-[11px] truncate">
+                    {interactionMode === 'select' ? 'แตะแปลงบนแผนที่เพื่อดูข้อมูล' : 'แตะวาดแปลงบนแผนที่'}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Mode Switcher Shortcut on Mobile */}
+              <button
+                type="button"
+                onClick={() => {
+                  setInteractionMode(prev => prev === 'select' ? 'draw' : 'select');
+                  if (interactionMode === 'select') setPlotData(null);
+                }}
+                className={`p-2 rounded-xl border text-xs font-semibold flex items-center justify-center transition-all touch-manipulation ${
+                  interactionMode === 'draw'
+                    ? 'bg-blue-600/30 text-blue-300 border-blue-500/50'
+                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                }`}
+                title={interactionMode === 'select' ? 'สลับไปโหมดวาด' : 'สลับไปโหมดเลือก'}
+              >
+                {interactionMode === 'select' ? <Pencil className="w-3.5 h-3.5 text-blue-400" /> : <Radar className="w-3.5 h-3.5 text-cyan-400" />}
+              </button>
+
+              {/* If plotData exists: show 2 action buttons */}
+              {plotData ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setMobileDrawerOpen(true)}
+                    className="px-2.5 py-2 rounded-xl font-semibold text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1 transition-all touch-manipulation"
+                    title="เปิดดูรายละเอียดแปลงและราคาประเมินฐาน"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>ข้อมูลแปลง</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowPredictionPanel(true)}
+                    className="px-3 py-2 rounded-xl font-semibold text-xs flex items-center gap-1.5 shadow-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-purple-500/25 border border-purple-400/40 active:scale-95 transition-all touch-manipulation"
+                    title="เปิดแผงคาดการณ์ราคาอนาคต AI"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+                    <span>{jobResult?.status === 'completed' ? 'ดูผลทำนาย ➔' : 'ทำนายอนาคต'}</span>
+                    {!jobResult && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    )}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMobileDrawerOpen(true)}
+                  className="px-3 py-2 rounded-xl font-semibold text-xs bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 flex items-center gap-1.5 transition-all touch-manipulation"
+                >
+                  <Layers className="w-3.5 h-3.5 text-blue-400" />
+                  <span>แผงข้อมูล</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Right Section: Control Sidebar */}
-      <div className="w-[420px] max-w-full h-full bg-slate-900 border-l border-slate-800 flex flex-col shadow-2xl z-20 overflow-y-auto">
+      {/* Mobile Drawer Backdrop Overlay */}
+      {mobileDrawerOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1999] lg:hidden animate-in fade-in duration-200"
+          onClick={() => setMobileDrawerOpen(false)}
+        />
+      )}
+
+      {/* Right Section: Control Sidebar (Slide-over drawer on mobile/tablet, responsive fixed panel on desktop) */}
+      <aside
+        className={`
+          ${mobileDrawerOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
+          ${desktopSidebarOpen ? 'lg:w-[420px] xl:w-[440px]' : 'lg:w-0 lg:overflow-hidden lg:border-none'}
+          fixed lg:static inset-y-0 right-0 z-[2000] lg:z-20
+          w-full sm:w-[480px] lg:max-w-none h-full
+          bg-slate-900 border-l border-slate-800
+          flex flex-col shadow-2xl transition-all duration-300 ease-in-out overflow-hidden
+        `}
+      >
         {/* Sidebar Header */}
-        <div className="p-5 border-b border-slate-800 bg-slate-900/60 sticky top-0 backdrop-blur-sm z-10">
-          <div className="flex items-center justify-between">
+        <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-900/80 sticky top-0 backdrop-blur-md z-10 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2">
+            {/* Mobile Back to Map button */}
+            <button
+              onClick={() => setMobileDrawerOpen(false)}
+              className="lg:hidden p-1.5 -ml-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1 text-xs touch-manipulation"
+              title="กลับไปยังแผนที่"
+            >
+              <ArrowLeft className="w-4 h-4 text-cyan-400" />
+              <span className="font-medium">แผนที่</span>
+            </button>
+
             <div className="flex items-center gap-2 text-blue-400">
-              <Layers className="w-5 h-5" />
-              <h2 className="text-sm font-semibold tracking-wider uppercase text-slate-300">
+              <Layers className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
+              <h2 className="text-xs sm:text-sm font-semibold tracking-wider uppercase text-slate-200 truncate">
                 แผงควบคุมและประเมินราคา
               </h2>
             </div>
+          </div>
+
+          <div className="flex items-center gap-2">
             {plotData && (
-              <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" /> แปลงที่ดินพร้อม
+              <span className="text-[10px] sm:text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-medium flex items-center gap-1 whitespace-nowrap">
+                <CheckCircle2 className="w-3 h-3" /> แปลงพร้อม
               </span>
             )}
+
+            {/* Desktop Collapse Button */}
+            <button
+              onClick={() => setDesktopSidebarOpen(false)}
+              className="hidden lg:flex p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all"
+              title="ยุบแผงควบคุมเพื่อดูแผนที่เต็มจอ"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+
+            {/* Mobile Close X button */}
+            <button
+              onClick={() => setMobileDrawerOpen(false)}
+              className="lg:hidden p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-all touch-manipulation"
+              title="ปิดแผงข้อมูล"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
         {/* Sidebar Content */}
-        <div className="p-5 space-y-5 flex-1">
+        <div className="p-4 sm:p-5 space-y-4 sm:space-y-5 flex-1 overflow-y-auto admin-custom-scrollbar safe-bottom">
           {/* Mode Switcher Toggle: AI Vision Radar vs Manual Draw */}
           <div className="bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 flex items-center gap-1.5 shadow-inner">
             <button
@@ -656,20 +848,6 @@ export function App() {
               />
             </div>
 
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">ผังเมือง / เขตการใช้ประโยชน์ที่ดิน</label>
-              <select
-                value={landUseZone}
-                onChange={(e) => setLandUseZone(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-              >
-                <option value="สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)">สีส้ม ย.6 (ที่อยู่อาศัยหนาแน่นปานกลาง)</option>
-                <option value="สีแดง พ.3 (พาณิชยกรรม)">สีแดง พ.3 (พาณิชยกรรม)</option>
-                <option value="สีเหลือง ย.3 (ที่อยู่อาศัยหนาแน่นน้อย)">สีเหลือง ย.3 (ที่อยู่อาศัยหนาแน่นน้อย)</option>
-                <option value="สีม่วง อ.1 (อุตสาหกรรมและคลังสินค้า)">สีม่วง อ.1 (อุตสาหกรรมและคลังสินค้า)</option>
-                <option value="สีเขียว ก.4 (เกษตรกรรมและชนบท)">สีเขียว ก.4 (เกษตรกรรมและชนบท)</option>
-              </select>
-            </div>
 
             {/* SECTION: If plotData exists, the Drawn Plot strictly determines area and valuation */}
             {plotData ? (
@@ -929,8 +1107,8 @@ export function App() {
                 {visionResult.surrounding_buildings.length > 0 && (
                   <div className="space-y-1.5">
                     <div className="text-[11px] font-semibold text-slate-400 flex items-center justify-between">
-                      <span>สิ่งปลูกสร้างใกล้เคียง (Bounding Box):</span>
-                      <span className="text-[10px] text-cyan-400">สแกนครอบคลุม 200 ม.</span>
+                      <span>สิ่งปลูกสร้างรอบแปลง (Bounding Box 200 ม.):</span>
+                      <span className="text-[10px] text-cyan-400">พบ {visionResult.surrounding_buildings.length} หลัง</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       {visionResult.surrounding_buildings.slice(0, 4).map((bld, idx) => (
@@ -953,7 +1131,7 @@ export function App() {
               </div>
             ) : (
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                สแกนภาพถ่ายดาวเทียมความละเอียดสูงด้วย YOLOv8 (best.pt) ในรัศมี 200 เมตร แสดงอาคารรอบข้างเป็น Bounding Box (กรอบสี่เหลี่ยมสีฟ้า) เพื่อวิเคราะห์ความหนาแน่น
+                สแกนภาพถ่ายดาวเทียมความละเอียดสูงด้วย YOLO-test ในรัศมี 200 เมตร แสดงอาคารรอบข้างเป็น Bounding Box (กรอบสี่เหลี่ยมสีฟ้า) เพื่อวิเคราะห์ความหนาแน่น
               </p>
             )}
           </div>
@@ -982,23 +1160,43 @@ export function App() {
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
                       ตรวจพบสถานที่ในระยะเดินรถ &le; 500 ม. ({nearbyPOIs.length} แห่ง)
                     </div>
-                    {nearbyPOIs.map((poi, idx) => (
-                      <div key={idx} className="bg-emerald-950/30 p-2.5 rounded-lg border border-emerald-800/50 flex items-center justify-between gap-2 shadow-sm">
-                        <div className="min-w-0">
-                          <div className="text-xs font-semibold text-white truncate">{poi.name}</div>
-                          <div className="text-[10px] text-slate-300 flex items-center gap-1.5 mt-0.5">
-                            <span className="px-1.5 py-0.5 bg-emerald-900/60 text-emerald-300 rounded text-[9px]">{poi.category_th}</span>
-                            {poi.badge && <span className="text-slate-400">&bull; {poi.badge}</span>}
+                    {nearbyPOIs.map((poi, idx) => {
+                      const meta = getPOIMeta(poi);
+                      return (
+                        <div key={idx} className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800/80 hover:border-emerald-500/40 flex items-center justify-between gap-2.5 shadow-sm transition-colors">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <span 
+                              className="text-base shrink-0 p-1.5 rounded-lg flex items-center justify-center shadow-inner"
+                              style={{ 
+                                backgroundColor: meta.bgLight, 
+                                border: `1px solid ${meta.borderLight}`,
+                                color: meta.color 
+                              }}
+                            >
+                              {meta.emoji}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold text-white truncate">{poi.name}</div>
+                              <div className="text-[10px] text-slate-300 flex items-center gap-1.5 mt-0.5">
+                                <span 
+                                  className="px-1.5 py-0.5 rounded text-[9px] font-medium"
+                                  style={{ backgroundColor: meta.bgLight, color: meta.color, border: `1px solid ${meta.borderLight}` }}
+                                >
+                                  {meta.labelTh}
+                                </span>
+                                {poi.badge && <span className="text-slate-400 truncate">&bull; {poi.badge}</span>}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-900/80 border border-emerald-700/60 px-2 py-0.5 rounded-md">
+                              {poi.distanceMeters} ม.
+                            </span>
+                            <div className="text-[9px] text-slate-400 mt-0.5">ถนนจริง OSRM</div>
                           </div>
                         </div>
-                        <div className="text-right shrink-0">
-                          <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-900/80 border border-emerald-700/60 px-2 py-0.5 rounded-md">
-                            {poi.distanceMeters} ม.
-                          </span>
-                          <div className="text-[9px] text-slate-400 mt-0.5">ถนนจริง OSRM</div>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="p-2.5 rounded-lg bg-slate-900/50 border border-slate-800 text-[11px] text-slate-400 flex items-center gap-1.5">
@@ -1008,34 +1206,55 @@ export function App() {
                 )}
 
                 {/* Always show Nearest Landmark with its exact driving distance! */}
-                {nearestPOI && (
-                  <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 space-y-1.5">
-                    <div className="text-[11px] font-semibold text-cyan-400 flex items-center justify-between">
-                      <span className="flex items-center gap-1">📍 สถานที่สำคัญที่ใกล้ที่สุด</span>
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        เส้นตรง: {nearestPOI.straightDistanceMeters} ม.
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-white truncate">{nearestPOI.name}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">
-                          หมวดหมู่: <span className="text-slate-200">{nearestPOI.category_th}</span> {nearestPOI.badge && `(${nearestPOI.badge})`}
+                {nearestPOI && (() => {
+                  const meta = getPOIMeta(nearestPOI);
+                  return (
+                    <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 space-y-2">
+                      <div className="text-[11px] font-semibold text-cyan-400 flex items-center justify-between">
+                        <span className="flex items-center gap-1">📍 สถานที่สำคัญที่ใกล้ที่สุด</span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          เส้นตรง: {nearestPOI.straightDistanceMeters} ม.
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span 
+                            className="text-lg shrink-0 p-1.5 rounded-lg flex items-center justify-center shadow-inner"
+                            style={{ 
+                              backgroundColor: meta.bgLight, 
+                              border: `1px solid ${meta.borderLight}`,
+                              color: meta.color 
+                            }}
+                          >
+                            {meta.emoji}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white truncate">{nearestPOI.name}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+                              <span 
+                                className="px-1.5 py-0.5 rounded text-[9px] font-medium"
+                                style={{ backgroundColor: meta.bgLight, color: meta.color, border: `1px solid ${meta.borderLight}` }}
+                              >
+                                {meta.labelTh}
+                              </span>
+                              {nearestPOI.badge && <span className="text-slate-400 truncate">&bull; {nearestPOI.badge}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className={`text-sm font-mono font-bold px-2 py-0.5 rounded border ${
+                            nearestPOI.isWithin500m
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                              : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                          }`}>
+                            {nearestPOI.distanceMeters} ม.
+                          </span>
+                          <div className="text-[9px] text-slate-400 mt-0.5">เส้นทางเดินรถ OSRM</div>
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <span className={`text-sm font-mono font-bold px-2 py-0.5 rounded border ${
-                          nearestPOI.isWithin500m
-                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                            : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
-                        }`}>
-                          {nearestPOI.distanceMeters} ม.
-                        </span>
-                        <div className="text-[9px] text-slate-400 mt-0.5">เส้นทางเดินรถ OSRM</div>
-                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             ) : (
               <div className="p-3 rounded-lg bg-slate-900/40 border border-slate-800/70 text-xs text-slate-500 text-center">
@@ -1044,366 +1263,56 @@ export function App() {
             )}
           </div>
 
-          {/* AI Model Selection Card for Land Valuation (XGBoost vs ARIMAX) */}
-          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Cpu className="w-4 h-4 text-cyan-400" /> โมเดลประเมินราคาที่ดิน (Algorithm)
-              </label>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-white/10">
-                {selectedModel === 'xgboost'
-                  ? 'R² 0.968 (Spatial ML)'
-                  : 'AIC 230.7 (Time-Series)'}
-              </span>
-            </div>
-
-            {/* Model Selection 2 Columns */}
-            <div className="grid grid-cols-2 gap-2.5">
-              {[
-                {
-                  id: 'xgboost',
-                  name: 'XGBoost Regressor',
-                  badge: 'Spatial ML',
-                  metric: 'R² 0.968',
-                  desc: 'วิเคราะห์เชิงพื้นที่ 17 ปัจจัย + รัศมีอาคาร 200 ม.',
-                  tag: 'เหมาะกับแปลงเจาะจง & ซื้อขาย',
-                  activeColor: 'border-cyan-500/80 bg-cyan-950/40 text-cyan-300 ring-1 ring-cyan-500/30'
-                },
-                {
-                  id: 'arimax',
-                  name: 'ARIMAX (1,1,0)',
-                  badge: 'Econometrics',
-                  metric: 'AIC 230.7',
-                  desc: 'วิเคราะห์อนุกรมเวลา 17 ปี + อัตราเงินเฟ้อ',
-                  tag: 'เหมาะกับวางแผนระยะยาว & ลงทุน',
-                  activeColor: 'border-emerald-500/80 bg-emerald-950/40 text-emerald-300 ring-1 ring-emerald-500/30'
-                },
-              ].map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setSelectedModel(m.id as any)}
-                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                    selectedModel === m.id
-                      ? `${m.activeColor} shadow-md`
-                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <span className="text-xs font-bold text-white truncate">{m.name}</span>
-                      <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0 font-semibold ${
-                        selectedModel === m.id ? 'bg-white/15 text-white' : 'bg-slate-800 text-slate-400'
-                      }`}>
-                        {m.metric}
-                      </span>
-                    </div>
-                    <div className="text-[10px] text-slate-300 leading-snug">{m.desc}</div>
-                  </div>
-                  <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between text-[9px]">
-                    <span className="text-slate-400">{m.tag}</span>
-                    <span className={`px-1.5 py-0.2 rounded font-mono ${
-                      selectedModel === m.id ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500'
-                    }`}>
-                      {m.badge}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            {/* Checkbox: Force ML Model */}
-            <label className="flex items-start gap-2 pt-1 text-xs text-slate-300 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={forceModel}
-                onChange={(e) => setForceModel(e.target.checked)}
-                className="mt-0.5 w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-cyan-600 focus:ring-0 cursor-pointer"
-              />
-              <span className="text-[11px] text-slate-400 leading-tight">
-                บังคับใช้โมเดลเพื่อตรวจสอบและวัดความคลาดเคลื่อน (Residual Error) เทียบกับราคาจริงกรมธนารักษ์
-              </span>
-            </label>
-          </div>
-
-          {/* Prediction Horizon Slider (1-5 Years) */}
-          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
-
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-blue-400" /> ระยะเวลาคาดการณ์ราคา
-              </label>
-              <span className="text-sm font-bold text-blue-400 bg-blue-500/10 px-2.5 py-0.5 rounded-md border border-blue-500/20">
-                {predictionYears} ปีข้างหน้า
-              </span>
-            </div>
-
-            <input
-              type="range"
-              min="1"
-              max="5"
-              step="1"
-              value={predictionYears}
-              onChange={(e) => setPredictionYears(parseInt(e.target.value, 10))}
-              className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500 focus:outline-none"
-            />
-
-            <div className="flex justify-between text-[11px] font-medium text-slate-500 px-1">
-              {[1, 2, 3, 4, 5].map((year) => (
-                <span
-                  key={year}
-                  onClick={() => setPredictionYears(year)}
-                  className={`cursor-pointer transition-colors ${
-                    predictionYears === year ? 'text-blue-400 font-bold' : 'hover:text-slate-300'
-                  }`}
-                >
-                  {year} ปี
+          {/* Future Prediction Launch Card inside Sidebar */}
+          {plotData ? (
+            <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-950/50 via-slate-950/60 to-purple-950/40 border border-indigo-800/60 shadow-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5 uppercase tracking-wider">
+                  <Sparkles className="w-4 h-4 text-indigo-400" /> การทำนายราคาในอนาคต (AI)
                 </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Action Button: Predict Price */}
-          <div>
-            <button
-              onClick={handlePredict}
-              disabled={loading || !plotData}
-              className={`w-full py-3.5 px-4 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 shadow-lg transition-all ${
-                !plotData
-                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
-                  : loading
-                  ? 'bg-blue-600/80 text-white cursor-wait animate-pulse'
-                  : 'bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 text-white shadow-blue-500/25 active:scale-[0.99] border border-blue-400/20'
-              }`}
-            >
-              {loading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>กำลังส่งคำขอเข้าสู่คิว AI...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4 text-blue-200" />
-                  <span>ประเมินราคา (GeoPrice)</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Submission Error Banner */}
-          {submissionError && (
-            <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-xs text-rose-300 flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <span>{submissionError}</span>
-            </div>
-          )}
-
-          {/* Job Queue Status & Response Details (Real-Time WebSocket) */}
-          {activeJob && (
-            <div className="bg-slate-950/80 rounded-xl border border-slate-800 p-4 space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
-                <div className="text-xs font-semibold text-slate-300 flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-indigo-400" />
-                  สถานะการประมวลผล
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/40 px-1.5 py-0.5 rounded flex items-center gap-1">
-                    <Radio className="w-3 h-3 text-cyan-400 animate-pulse" /> WebSocket
-                  </span>
-                  <span
-                    className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
-                      jobResult?.status === 'completed'
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                        : jobResult?.status === 'failed'
-                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
-                    }`}
-                  >
-                    {jobResult?.status === 'completed'
-                      ? 'ประเมินราคาเสร็จสมบูรณ์'
-                      : jobResult?.status === 'failed'
-                      ? 'การประเมินล้มเหลว'
-                      : 'กำลังประมวลผล (Real-Time)'}
-                  </span>
-                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-200 border border-indigo-700/50">
+                  {selectedModel === 'xgboost' ? 'XGBoost (Spatial ML)' : 'ARIMAX (Time-Series)'}
+                </span>
               </div>
 
-              <div className="space-y-1.5 text-xs">
-                <div className="flex justify-between text-slate-400">
-                  <span>Job ID:</span>
-                  <span className="font-mono text-slate-200 text-[11px] truncate max-w-[200px]" title={activeJob.job_id}>
-                    {activeJob.job_id}
-                  </span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>ข้อความ:</span>
-                  <span className="text-slate-300 text-right">{activeJob.message}</span>
-                </div>
-              </div>
-
-              {/* Completed Price Prediction Display */}
-              {jobResult?.price_prediction && (
-                <div className="mt-3 pt-3 border-t border-slate-800/80 bg-blue-950/30 -mx-4 -mb-4 p-4 rounded-b-xl space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-blue-400">
-                      <TrendingUp className="w-4 h-4" />
-                      ผลการประเมินราคาที่ดิน ({predictionYears} ปีข้างหน้า - ปี {2026 + predictionYears})
-                    </div>
-                    {(jobResult.price_prediction.details_json?.total_growth_pct ?? 0) > 0 && (
-                      <span className="text-[10px] font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 px-2 py-0.5 rounded-full">
-                        +{jobResult.price_prediction.details_json?.total_growth_pct}%
-                      </span>
+              {jobResult?.price_prediction ? (
+                <div className="p-3 rounded-lg bg-indigo-900/30 border border-indigo-500/30 space-y-1">
+                  <div className="text-[10px] text-indigo-300">
+                    ผลการประเมินราคาล่าสุด ({jobResult.price_prediction.details_json?.selected_model?.toUpperCase() || selectedModel.toUpperCase()})
+                  </div>
+                  <div className="text-lg font-bold font-mono text-amber-300">
+                    ฿{(
+                      jobResult.price_prediction.details_json?.price_per_wah_thb ??
+                      jobResult.price_prediction.details_json?.predicted_price_per_wah ??
+                      Math.round(jobResult.price_prediction.predicted_price_per_sqm * 4)
+                    ).toLocaleString()} <span className="text-xs text-slate-400 font-normal">/ ตร.ว.</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    ความเชื่อมั่น: <span className="text-emerald-400 font-semibold">{Math.round(jobResult.price_prediction.confidence_score * 100)}%</span> &bull; ระยะเวลา: {predictionYears} ปี
+                    {jobResult.price_prediction.details_json?.base_price_per_wah_thb && (
+                      <span className="text-slate-400"> &bull; ฐานราคา: ฿{jobResult.price_prediction.details_json.base_price_per_wah_thb.toLocaleString()}</span>
                     )}
                   </div>
-
-                  {jobResult.price_prediction.details_json?.valuation_source && (
-                    <div className="text-[10px] text-slate-400 bg-slate-900/60 p-1.5 rounded border border-slate-800 flex items-center gap-1.5">
-                      <span>{jobResult.price_prediction.details_json.source_badge === 'real_exact' ? '🟢' : '🟣'}</span>
-                      <span className="truncate">{jobResult.price_prediction.details_json.valuation_source}</span>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                      <div className="text-[10px] text-slate-400">ราคาเฉลี่ย / ตร.ม. (ปี {2026 + predictionYears})</div>
-                      <div className="text-sm font-bold text-white mt-0.5">
-                        ฿{jobResult.price_prediction.predicted_price_per_sqm.toLocaleString()}
-                      </div>
-                      {jobResult.price_prediction.details_json?.base_price_per_sqm_thb && (
-                        <div className="text-[9px] text-slate-500 mt-0.5">
-                          ปัจจุบัน ฿{jobResult.price_prediction.details_json.base_price_per_sqm_thb.toLocaleString()}
-                        </div>
-                      )}
-                    </div>
-                    <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                      <div className="text-[10px] text-slate-400">มูลค่ารวมทั้งแปลง (ปี {2026 + predictionYears})</div>
-                      <div className="text-sm font-bold text-emerald-400 mt-0.5">
-                        ฿{jobResult.price_prediction.total_predicted_price.toLocaleString()}
-                      </div>
-                      {(jobResult.price_prediction.details_json?.appreciation_gain_thb ?? 0) > 0 && (
-                        <div className="text-[9px] text-emerald-400/80 mt-0.5 font-medium">
-                          +฿{jobResult.price_prediction.details_json?.appreciation_gain_thb?.toLocaleString()}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Multi-Year Timeline pills if available */}
-                  {jobResult.price_prediction.details_json?.forecast_timeline && (
-                    <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 space-y-1.5">
-                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-medium">
-                        <span>ไทม์ไลน์คาดการณ์ราคาอนาคต ({jobResult.price_prediction.details_json?.selected_model?.toUpperCase() || 'ML'}):</span>
-                        <span className="text-[9px] text-cyan-400 font-mono">
-                          {jobResult.price_prediction.details_json?.selected_model === 'arimax' ? '95% CI Bands' : '±MAE Bounds'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-4 gap-1 text-center">
-                        {jobResult.price_prediction.details_json.forecast_timeline.slice(0, 4).map((f: any) => (
-                          <div key={f.calendar_year} className={`p-1.5 rounded text-[9px] transition-all ${
-                            f.year_offset === predictionYears
-                              ? 'bg-blue-600/30 text-blue-200 border border-blue-500/50 font-bold shadow-sm'
-                              : 'bg-slate-800/40 text-slate-400'
-                          }`}>
-                            <div className="text-[10px] font-semibold">{f.calendar_year}</div>
-                            <div className="font-mono mt-0.5 text-white">฿{Math.round(f.price_per_sqm / 1000)}k</div>
-                            {f.growth_pct > 0 && (
-                              <div className="text-emerald-400 text-[8.5px] font-semibold">+{f.growth_pct}%</div>
-                            )}
-                            {f.lower_bound_wah && f.upper_bound_wah && f.lower_bound_wah !== f.upper_bound_wah && (
-                              <div className="text-[7.5px] text-slate-400/80 mt-0.5 font-mono truncate" title={`ช่วงความเชื่อมั่น: ฿${f.lower_bound_wah.toLocaleString()} - ฿${f.upper_bound_wah.toLocaleString()}`}>
-                                ±{Math.round((f.upper_bound_wah - f.price_per_wah) / 1000)}k
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Multi-Model Inspection & Variance Table */}
-                  {jobResult.price_prediction.details_json?.model_comparisons && (
-                    <div className="bg-slate-900/90 rounded-xl border border-slate-800 p-3 space-y-2">
-                      <div 
-                        onClick={() => setShowModelComparison(!showModelComparison)}
-                        className="flex items-center justify-between cursor-pointer select-none py-0.5"
-                      >
-                        <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
-                          <BarChart3 className="w-3.5 h-3.5" />
-                          <span>เปรียบเทียบ 2 โมเดล (XGBoost vs ARIMAX)</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
-                          <span>{showModelComparison ? 'ซ่อน' : 'แสดงตาราง'}</span>
-                          {showModelComparison ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                        </div>
-                      </div>
-
-                      {showModelComparison && (
-                        <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
-                          <div className="grid grid-cols-4 text-[10px] font-semibold text-slate-400 pb-1 px-1">
-                            <div>โมเดล</div>
-                            <div className="text-right">ราคา/ตร.ว.</div>
-                            <div className="text-right">ตัวชี้วัด</div>
-                            <div className="text-right">ส่วนต่าง</div>
-                          </div>
-
-                          {Object.values(jobResult.price_prediction.details_json.model_comparisons).map((m: any) => {
-                            const isCurrentSelected = jobResult.price_prediction?.details_json?.selected_model === m.id || 
-                              (m.id === 'xgboost' && (!jobResult.price_prediction?.details_json?.selected_model || jobResult.price_prediction?.details_json?.selected_model === 'xgboost'));
-                            return (
-                              <div 
-                                key={m.id}
-                                className={`grid grid-cols-4 items-center text-[10px] p-2 rounded transition-colors ${
-                                  isCurrentSelected ? 'bg-cyan-950/40 border border-cyan-800/60 font-semibold' : 'hover:bg-slate-800/40'
-                                }`}
-                              >
-                                <div className="truncate text-slate-200" title={m.name}>
-                                  <div className="font-semibold text-white">{m.short_name || m.name}</div>
-                                  <div className="text-[9px] text-slate-400 truncate">{m.model_type || m.tag}</div>
-                                </div>
-                                <div className="text-right font-mono text-amber-300 font-bold">
-                                  ฿{m.price_per_wah?.toLocaleString()}
-                                </div>
-                                <div className="text-right font-mono text-slate-300 text-[9.5px]">
-                                  {m.metric_value || m.r2}
-                                </div>
-                                <div className="text-right font-mono">
-                                  {m.diff_from_xgboost_pct === 0 || m.diff_from_ensemble_pct === 0 ? (
-                                    <span className="text-slate-500">ฐาน (0%)</span>
-                                  ) : (m.diff_from_xgboost_pct ?? m.diff_from_ensemble_pct) > 0 ? (
-                                    <span className="text-rose-400">+{(m.diff_from_xgboost_pct ?? m.diff_from_ensemble_pct)}%</span>
-                                  ) : (
-                                    <span className="text-emerald-400">{(m.diff_from_xgboost_pct ?? m.diff_from_ensemble_pct)}%</span>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-
-                          {/* Official ground truth residual comparison if available */}
-                          {jobResult.price_prediction.details_json?.official_ground_truth && (
-                            <div className="mt-2 p-2 bg-emerald-950/40 border border-emerald-800/60 rounded-lg text-[10px] text-emerald-300 space-y-0.5">
-                              <div className="font-semibold flex items-center justify-between">
-                                <span>🎯 เทียบราคาจริงกรมธนารักษ์ (Residual):</span>
-                                <span className="font-mono">฿{jobResult.price_prediction.details_json.official_ground_truth.price_per_wah?.toLocaleString()} / ตร.ว.</span>
-                              </div>
-                              <div className="text-slate-300 text-[9px]">
-                                {jobResult.price_prediction.details_json.official_ground_truth.note} (แปลง {jobResult.price_prediction.details_json.official_ground_truth.parcel_id})
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
-                    <span>ความเชื่อมั่นโมเดล:</span>
-                    <span className="font-mono font-semibold text-blue-300">
-                      {Math.round(jobResult.price_prediction.confidence_score * 100)}%
-                    </span>
-                  </div>
                 </div>
+              ) : (
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  วิเคราะห์และคาดการณ์ราคาที่ดินล่วงหน้า 1-5 ปี ด้วยโมเดล Spatial ML และ Time-Series พร้อมเปรียบเทียบทุกโมเดล
+                </p>
               )}
+
+              <button
+                type="button"
+                onClick={() => setShowPredictionPanel(true)}
+                className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 active:scale-[0.98] transition-all cursor-pointer border border-blue-400/30"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-blue-200" />
+                <span>{jobResult?.price_prediction ? 'เปิดแผงวิเคราะห์และเปรียบเทียบโมเดล' : 'เปิดแผงควบคุมทำนายราคา (AI)'}</span>
+              </button>
+            </div>
+          ) : (
+            <div className="p-3.5 rounded-xl bg-slate-900/40 border border-slate-800/70 text-xs text-slate-500 text-center space-y-1">
+              <div className="font-semibold text-slate-400">🔮 ระบบทำนายราคาในอนาคต (AI)</div>
+              <div>กรุณาเลือกหรือวาดแปลงที่ดินบนแผนที่ เพื่อเปิดใช้งานการทำนายราคา</div>
             </div>
           )}
         </div>
@@ -1412,7 +1321,27 @@ export function App() {
         <div className="p-4 border-t border-slate-800/80 text-center text-[11px] text-slate-500 bg-slate-950/40">
           GeoPrice AI Platform &bull; GIS Spatio-Temporal Valuation
         </div>
-      </div>
+      </aside>
+
+      {/* Dedicated Future Price Prediction Panel (Drawer / Floating Modal) */}
+      <FuturePredictionPanel
+        isOpen={showPredictionPanel}
+        onClose={() => setShowPredictionPanel(false)}
+        plotData={plotData}
+        selectedModel={selectedModel}
+        setSelectedModel={setSelectedModel}
+        forceModel={forceModel}
+        setForceModel={setForceModel}
+        predictionYears={predictionYears}
+        setPredictionYears={setPredictionYears}
+        onPredict={handlePredict}
+        loading={loading}
+        submissionError={submissionError}
+        activeJob={activeJob}
+        jobResult={jobResult}
+        showModelComparison={showModelComparison}
+        setShowModelComparison={setShowModelComparison}
+      />
     </div>
   );
 }

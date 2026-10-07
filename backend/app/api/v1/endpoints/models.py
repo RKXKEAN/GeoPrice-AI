@@ -46,7 +46,26 @@ def list_registered_models():
                 data = resp.json()
                 registered = data.get("registered_models", [])
                 for rm in registered:
-                    latest = rm.get("latest_versions", [{}])[0] if rm.get("latest_versions") else {}
+                    versions = rm.get("latest_versions", [])
+                    active_ver_str = None
+                    for al in rm.get("aliases", []):
+                        if al.get("alias") == "active":
+                            active_ver_str = str(al.get("version"))
+                            break
+                    target_ver = None
+                    if active_ver_str:
+                        for v in versions:
+                            if str(v.get("version")) == active_ver_str:
+                                target_ver = v
+                                break
+                    if not target_ver:
+                        for v in versions:
+                            if v.get("current_stage", "").lower() == "production":
+                                target_ver = v
+                                break
+                    if not target_ver and versions:
+                        target_ver = max(versions, key=lambda x: int(x.get("version", 0)) if str(x.get("version", "")).isdigit() else 0)
+                    latest = target_ver or {}
                     updated_ts = rm.get("last_updated_timestamp")
                     updated_iso = (
                         datetime.fromtimestamp(int(updated_ts) / 1000, tz=timezone.utc).isoformat()

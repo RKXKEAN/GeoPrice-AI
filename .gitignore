@@ -6,9 +6,10 @@ venv/
 # Python & Packages
 __pycache__/
 *.pyc
+*.pt
 .uv/
 uv.lock
-~$*
+docs/
 
 # Docker Volumes / Local Data (ห้ามนำขึ้น Git เด็ดขาด)
 postgres_data/
@@ -16,5 +17,7 @@ minio_data/
 redis_data/
 mlflow_data/
 label_studio_data/
+backend/app/data/
+ai_worker/*.csv
 
 PROJECT_KNOWLEDGE.md

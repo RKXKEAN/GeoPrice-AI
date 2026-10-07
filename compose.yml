@@ -53,6 +53,8 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - LABEL_STUDIO_URL=http://label_studio:8080
       - LABEL_STUDIO_API_KEY=${LABEL_STUDIO_API_KEY}
+      - VISION_MODEL_KEY=${VISION_MODEL_KEY:-test yolo/YOLO-test.pt}
+      - VISION_MODEL_NAME=${VISION_MODEL_NAME:-YOLO-test}
     depends_on:
       - postgres
       - redis
@@ -94,6 +96,9 @@ services:
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
       - BACKEND_URL=http://backend:8000
       - WORKER_ROLE=inference
+      - VISION_MODEL_KEY=${VISION_MODEL_KEY:-test yolo/YOLO-test.pt}
+      - VISION_MODEL_NAME=${VISION_MODEL_NAME:-YOLO-test}
+      - ARIMAX_MODEL_KEY=${ARIMAX_MODEL_KEY:-Price Prediction/arimax_land_price_5features.joblib}
     depends_on:
       - redis
       - minio
@@ -124,6 +129,9 @@ services:
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
       - BACKEND_URL=http://backend:8000
       - WORKER_ROLE=trainer
+      - VISION_MODEL_KEY=${VISION_MODEL_KEY:-test yolo/YOLO-test.pt}
+      - VISION_MODEL_NAME=${VISION_MODEL_NAME:-YOLO-test}
+      - ARIMAX_MODEL_KEY=${ARIMAX_MODEL_KEY:-Price Prediction/arimax_land_price_5features.joblib}
     depends_on:
       - redis
       - minio

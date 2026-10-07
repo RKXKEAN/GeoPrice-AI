@@ -176,15 +176,27 @@ html, body, #root {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px solid rgba(255, 255, 255, 0.9);
+  border: 2px solid rgba(255, 255, 255, 0.95);
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
   position: relative;
   z-index: 2;
 }
 
-.landmark-pin:hover {
-  transform: scale(1.25) translateY(-3px);
+.landmark-pin-container:hover .landmark-pin {
+  transform: scale(1.3) translateY(-4px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.6), 0 0 16px rgba(255, 255, 255, 0.8);
+}
+
+.landmark-pin-container.is-selected .landmark-pin {
+  transform: scale(1.25);
+  border-color: #38bdf8;
+  animation: poiSelectedBounce 1s infinite alternate ease-in-out;
+}
+
+@keyframes poiSelectedBounce {
+  0% { transform: scale(1.25) translateY(0); }
+  100% { transform: scale(1.35) translateY(-4px); }
 }
 
 .landmark-pulse {
@@ -192,22 +204,23 @@ html, body, #root {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  animation: landmarkPulse 2s infinite cubic-bezier(0.455, 0.03, 0.515, 0.955);
+  animation: landmarkPulse 2.2s infinite cubic-bezier(0.455, 0.03, 0.515, 0.955);
   opacity: 0.6;
   z-index: 1;
+  pointer-events: none;
 }
 
 @keyframes landmarkPulse {
   0% {
-    transform: scale(0.9);
-    opacity: 0.8;
+    transform: scale(0.8);
+    opacity: 0.9;
   }
-  70% {
-    transform: scale(2.2);
+  60% {
+    transform: scale(2.4);
     opacity: 0;
   }
   100% {
-    transform: scale(2.5);
+    transform: scale(2.8);
     opacity: 0;
   }
 }
@@ -466,5 +479,70 @@ html, body, #root {
 }
 .admin-custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
+}
+
+/* ========================================================== */
+/* 📱 MOBILE & TABLET RESPONSIVE UTILITIES                    */
+/* ========================================================== */
+.touch-manipulation {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.safe-bottom {
+  padding-bottom: max(1.25rem, env(safe-area-inset-bottom, 1.25rem));
+}
+
+.safe-top {
+  padding-top: max(1rem, env(safe-area-inset-top, 1rem));
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ========================================================== */
+/* 🏛️ HAT YAI DISTRICT ADMINISTRATIVE BORDER STYLES         */
+/* ========================================================== */
+.hatyai-boundary-glow {
+  filter: drop-shadow(0 0 10px rgba(14, 165, 233, 0.7)) drop-shadow(0 0 22px rgba(2, 132, 199, 0.45));
+  pointer-events: none !important;
+}
+
+.hatyai-boundary-dashed {
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.9));
+  cursor: pointer;
+}
+
+.hatyai-boundary-tooltip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(56, 189, 248, 0.5) !important;
+  border-radius: 10px !important;
+  padding: 6px 10px !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7) !important;
+  color: #ffffff !important;
+}
+
+.hatyai-outer-mask {
+  pointer-events: none !important;
+}
+
+.custom-subdistrict-popup .leaflet-popup-content-wrapper {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(56, 189, 248, 0.4) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7) !important;
+  color: #ffffff !important;
+}
+
+.custom-subdistrict-popup .leaflet-popup-tip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  border: 1px solid rgba(56, 189, 248, 0.4) !important;
 }
 

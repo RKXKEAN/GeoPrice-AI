@@ -17,18 +17,48 @@ USER_AGENT = "GeoPriceAI/1.0 (contact: admin@geoprice.ai)"
 # In-memory cache for fast lookups
 _poi_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-# Path to local landmarks JSON fallback inside backend/app/data
-LANDMARKS_FILE = Path(__file__).resolve().parents[3] / "data" / "hatyai_landmarks.json"
+# In-memory cache for landmarks GeoJSON
+_cached_landmarks_json = None
+
+def _load_landmarks_data() -> dict:
+    global _cached_landmarks_json
+    if _cached_landmarks_json is not None:
+        return _cached_landmarks_json
+
+    # 1. Try MinIO S3
+    try:
+        from app.services.minio_service import get_minio_service
+        minio_svc = get_minio_service()
+        res = minio_svc.client.get_object("datasets", "hatyai_landmarks.json")
+        data = json.loads(res.read().decode("utf-8"))
+        res.close()
+        res.release_conn()
+        _cached_landmarks_json = data
+        logger.info("✅ Loaded hatyai_landmarks.json directly from MinIO datasets bucket")
+        return data
+    except Exception as me:
+        logger.warning(f"Could not load landmarks from MinIO: {me}")
+
+    # 2. Local fallback if exists
+    landmarks_file = Path(__file__).resolve().parents[3] / "data" / "hatyai_landmarks.json"
+    if landmarks_file.exists():
+        try:
+            with open(landmarks_file, "r", encoding="utf-8") as f:
+                _cached_landmarks_json = json.load(f)
+            return _cached_landmarks_json
+        except Exception:
+            pass
+
+    return {}
 
 def _get_fallback_landmarks(lat: float, lon: float, radius_m: float = 3000.0) -> List[Dict[str, Any]]:
-    """Return local curated landmarks from hatyai_landmarks.json as fallback."""
-    if not LANDMARKS_FILE.exists():
-        logger.warning(f"Landmarks fallback file not found at {LANDMARKS_FILE}")
+    """Return local curated landmarks from MinIO / cached JSON as fallback."""
+    data = _load_landmarks_data()
+    if not data:
+        logger.warning("No landmarks data available from MinIO or local fallback")
         return []
 
     try:
-        with open(LANDMARKS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
         
         fallback_pois = []
         for feature in data.get("features", []):
@@ -54,7 +84,9 @@ def _get_fallback_landmarks(lat: float, lon: float, radius_m: float = 3000.0) ->
                     "type": category,
                     "tags": {
                         "name": props.get("name"),
-                        category: category,
+                        "category": category,
+                        "category_th": props.get("category_th", ""),
+                        "amenity": category if category in ["university", "hospital", "school"] else "",
                         "description": props.get("description", ""),
                         "badge": props.get("badge", "")
                     }
@@ -82,19 +114,23 @@ async def get_pois_around(
         logger.info(f"Returning cached POIs for {cache_key}")
         return _poi_cache[cache_key]
 
-    query = f"""[out:json][timeout:4];
+    query = f"""[out:json][timeout:5];
 (
-  node["amenity"~"hospital|school|university|marketplace"](around:{radius},{lat},{lon});
-  node["shop"~"mall|supermarket"](around:{radius},{lat},{lon});
+  node["amenity"~"hospital|clinic|pharmacy|school|university|college|marketplace|bank|fuel|police|fire_station|townhall|courthouse|place_of_worship|restaurant|cafe|bus_station"](around:{radius},{lat},{lon});
+  node["shop"~"mall|supermarket|department_store|convenience"](around:{radius},{lat},{lon});
+  node["tourism"~"hotel|attraction|museum|viewpoint"](around:{radius},{lat},{lon});
+  node["aeroway"~"aerodrome|terminal"](around:{radius},{lat},{lon});
+  node["railway"~"station|halt"](around:{radius},{lat},{lon});
+  node["leisure"~"park|garden|sports_centre"](around:{radius},{lat},{lon});
 );
-out body 25;"""
+out body 40;"""
 
     pois: List[Dict[str, Any]] = []
 
-    # Attempt Overpass API servers (fast timeout: 3.5 seconds each)
+    # Attempt Overpass API servers (timeout: 4.5 seconds each)
     for server in OVERPASS_SERVERS:
         try:
-            async with httpx.AsyncClient(timeout=3.5) as client:
+            async with httpx.AsyncClient(timeout=4.5) as client:
                 resp = await client.post(
                     server,
                     data={"data": query},
@@ -114,8 +150,12 @@ out body 25;"""
                         continue
                     amenity = tags.get("amenity")
                     shop = tags.get("shop")
-                    category = amenity or shop or "poi"
-                    poi_type = "amenity" if amenity else ("shop" if shop else "poi")
+                    tourism = tags.get("tourism")
+                    railway = tags.get("railway")
+                    aeroway = tags.get("aeroway")
+                    leisure = tags.get("leisure")
+                    category = amenity or shop or tourism or railway or aeroway or leisure or "poi"
+                    poi_type = "amenity" if amenity else ("shop" if shop else ("tourism" if tourism else ("transport" if (railway or aeroway) else "poi")))
 
                     pois.append({
                         "id": el.get("id"),

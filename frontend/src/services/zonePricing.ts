@@ -277,3 +277,17 @@ export function resolveZoneAppraisalRate(lat: number, lon: number): ZonePricingR
     source_badge: 'ai_model_baseline',
   };
 }
+
+export const formatThaiLandAreaStr = (sqm: number): string => {
+  const rai = Math.floor(sqm / 1600);
+  const remainingAfterRai = sqm % 1600;
+  const ngan = Math.floor(remainingAfterRai / 400);
+  const remainingAfterNgan = remainingAfterRai % 400;
+  const wah = Math.round(((remainingAfterNgan / 4) * 10)) / 10;
+
+  const parts = [];
+  if (rai > 0) parts.push(`${rai} ไร่`);
+  if (ngan > 0) parts.push(`${ngan} งาน`);
+  if (wah > 0 || parts.length === 0) parts.push(`${wah} ตร.ว.`);
+  return parts.join(' ');
+};

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.job import Job
+from app.models.land_plot import LandPlot
 from app.models.price_prediction import PricePrediction
 from app.schemas.webhook import WebhookResultRequest, WebhookResultResponse
 
@@ -44,12 +45,36 @@ def update_prediction_results(
             confidence = payload.confidence_score if payload.confidence_score is not None else 0.90
             version = payload.model_version or "geoprice-xgb-v1.0"
 
+            # Inherit imagery and bboxes from existing prediction on the same plot or nearby coordinates or payload details
+            sibling = db.query(PricePrediction)\
+                .filter(PricePrediction.plot_id == job.plot_id, PricePrediction.raw_image_url.isnot(None))\
+                .first()
+
+            if not sibling and job.land_plot and job.land_plot.latitude and job.land_plot.longitude:
+                lat, lon = job.land_plot.latitude, job.land_plot.longitude
+                sibling = db.query(PricePrediction).join(LandPlot)\
+                    .filter(
+                        PricePrediction.raw_image_url.isnot(None),
+                        LandPlot.latitude.between(lat - 0.005, lat + 0.005),
+                        LandPlot.longitude.between(lon - 0.005, lon + 0.005)
+                    ).first()
+
+            raw_img = (sibling.raw_image_url if sibling else None) or (payload.details.get("raw_image_url") if isinstance(payload.details, dict) else None)
+            init_boxes = (sibling.initial_bboxes if sibling else None) or (payload.details.get("initial_bboxes") if isinstance(payload.details, dict) else None)
+            init_poly = (sibling.initial_polygons if sibling else None) or (payload.details.get("initial_polygons") if isinstance(payload.details, dict) else None)
+
             if prediction:
                 prediction.predicted_price_per_sqm = sqm_price
                 prediction.total_predicted_price = total_price
                 prediction.confidence_score = confidence
                 prediction.model_version = version
                 prediction.details_json = payload.details
+                if not prediction.raw_image_url and raw_img:
+                    prediction.raw_image_url = raw_img
+                if not prediction.initial_bboxes and init_boxes:
+                    prediction.initial_bboxes = init_boxes
+                if not prediction.initial_polygons and init_poly:
+                    prediction.initial_polygons = init_poly
             else:
                 prediction = PricePrediction(
                     job_id=job.job_id,
@@ -58,7 +83,13 @@ def update_prediction_results(
                     total_predicted_price=total_price,
                     confidence_score=confidence,
                     model_version=version,
-                    details_json=payload.details
+                    details_json=payload.details,
+                    raw_image_url=raw_img,
+                    initial_bboxes=init_boxes,
+                    initial_polygons=init_poly,
+                    initial_price_prediction=total_price,
+                    target_prediction_year=2026,
+                    is_verified=False
                 )
                 db.add(prediction)
 

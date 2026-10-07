@@ -35,6 +35,8 @@ export interface EcosystemInfo {
   total_models: number;
   active_price_model: string;
   active_vision_model: string;
+  price_r2_score?: string;
+  vision_map50?: string;
   last_retrain_timestamp: string;
   pipeline_status: string;
   sync_cadence: string;
@@ -175,11 +177,16 @@ export const adminApi = {
     return res.data;
   },
 
-  async triggerVisionRetrain(period: string = '2026_07-12', epochs: number = 5): Promise<{ status: string; job_id: string; message: string }> {
+  async triggerVisionRetrain(period: string = 'all', epochs: number = 20): Promise<{ status: string; job_id: string; message: string }> {
     const formData = new FormData();
     formData.append('period', period);
     formData.append('epochs', epochs.toString());
     const res = await axios.post(`${API_BASE}/retrain/vision`, formData);
+    return res.data;
+  },
+
+  async getRetrainHistory(): Promise<RetrainHistoryResponse> {
+    const res = await axios.get(`${API_BASE}/retrain/history`);
     return res.data;
   },
 
@@ -249,6 +256,60 @@ export const adminApi = {
     return res.data;
   },
 
+  async getVisionSchedulerStatus(): Promise<{
+    enabled: boolean;
+    interval_hours: number;
+    seconds_remaining: number;
+    hours_remaining: number;
+    next_run_iso: string;
+    last_run_iso: string;
+    mode: string;
+    target_model: string;
+    status: string;
+  }> {
+    const res = await axios.get(`${API_BASE}/vision-scheduler/status`);
+    return res.data;
+  },
+
+  async triggerVisionSchedulerNow(): Promise<{ status: string; job_id: string; message: string }> {
+    const res = await axios.post(`${API_BASE}/vision-scheduler/trigger-now`);
+    return res.data;
+  },
+
+  async getMlflowStatus(): Promise<{
+    status: string;
+    version: string;
+    tracking_uri: string;
+    internal_uri: string;
+  }> {
+    const res = await axios.get(`${API_BASE}/mlflow/status`);
+    return res.data;
+  },
+
+  async getMlflowRuns(): Promise<{
+    status: string;
+    total_runs: number;
+    runs: Array<{
+      run_id: string;
+      run_name: string;
+      experiment_id: string;
+      experiment_name: string;
+      status: string;
+      start_time: string;
+      end_time: string;
+      duration_seconds: number;
+      params: Record<string, any>;
+      metrics: Record<string, any>;
+      tags: Record<string, any>;
+      artifact_uri: string;
+      mlflow_url: string;
+    }>;
+    tracking_uri: string;
+  }> {
+    const res = await axios.get(`${API_BASE}/mlflow/runs`);
+    return res.data;
+  },
+
   async getPendingTriggers(limit: number = 30): Promise<PendingTriggersResponse> {
     const res = await axios.get(`${API_BASE}/triggers/pending`, { params: { limit } });
     return res.data;
@@ -298,6 +359,26 @@ export const adminApi = {
 
   async syncLabelStudio(folder: string = 'latest', limit: number = 1000): Promise<{ status: string; message: string; total_synced: number; project_id: number; project_url: string }> {
     const res = await axios.post(`${API_BASE}/label-studio/sync`, { folder, limit });
+    return res.data;
+  },
+
+  async clearAllHistory(): Promise<{ status: string; message: string; deleted: any }> {
+    const res = await axios.delete(`${API_BASE}/history/clear-all`);
+    return res.data;
+  },
+
+  async getModelSlots(): Promise<ModelSlotsResponse> {
+    const res = await axios.get(`${API_BASE}/model-slots`);
+    return res.data;
+  },
+
+  async switchModelSlot(slot: string, model_key: string): Promise<SwitchModelSlotResponse> {
+    const res = await axios.post(`${API_BASE}/model-slots/switch`, { slot, model_key });
+    return res.data;
+  },
+
+  async resetModelSlots(): Promise<{ status: string; message: string; active_slots: any }> {
+    const res = await axios.post(`${API_BASE}/model-slots/reset`);
     return res.data;
   }
 };
@@ -393,5 +474,74 @@ export interface LabelStudioStatusResponse {
   total_projects: number;
   total_tasks: number;
   projects: LabelStudioProjectInfo[];
+}
+
+export interface RetrainHistoryItem {
+  job_id: string;
+  model_type: string;
+  trigger_type: string;
+  status: string;
+  dataset_summary: string;
+  total_samples: number;
+  epochs: number;
+  metric_name: string;
+  metric_value: string;
+  secondary_metric?: string;
+  completed_at: string;
+}
+
+export interface RetrainHistoryResponse {
+  status: string;
+  total_runs: number;
+  runs: RetrainHistoryItem[];
+}
+
+export interface ModelSlotDetail {
+  key: string;
+  name: string;
+  type: string;
+  framework: string;
+  description: string;
+  updated_at: string;
+  file_size_formatted?: string;
+  file_size_bytes?: number;
+}
+
+export interface ModelCandidate {
+  key: string;
+  filename: string;
+  name: string;
+  size_bytes: number;
+  size_formatted: string;
+  last_modified?: string;
+  is_active: boolean;
+  framework?: string;
+}
+
+export interface ModelSlotsResponse {
+  status: string;
+  active_slots: {
+    slot1_spatial: ModelSlotDetail;
+    slot2_timeseries: ModelSlotDetail;
+    slot3_vision: ModelSlotDetail;
+  };
+  candidates: {
+    slot1_spatial: ModelCandidate[];
+    slot2_timeseries: ModelCandidate[];
+    slot3_vision: ModelCandidate[];
+  };
+  total_models_found: number;
+}
+
+export interface SwitchModelSlotResponse {
+  status: string;
+  message: string;
+  slot: string;
+  active_model: ModelSlotDetail;
+  active_slots: {
+    slot1_spatial: ModelSlotDetail;
+    slot2_timeseries: ModelSlotDetail;
+    slot3_vision: ModelSlotDetail;
+  };
 }
 

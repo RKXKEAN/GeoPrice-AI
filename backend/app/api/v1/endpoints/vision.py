@@ -20,8 +20,8 @@ class RadarDetectRequest(BaseModel):
 
 @router.post(
     "/radar-detect",
-    summary="Detect buildings within 200m using YOLOv8 best.pt and appraise target building",
-    description="Captures satellite imagery around (latitude, longitude), runs YOLOv8 model from MinIO to detect all buildings in 200m, identifies target building, and calculates zone appraisal value."
+    summary="Detect buildings within 200m using YOLO-test and appraise target building",
+    description="Captures satellite imagery around (latitude, longitude), runs YOLO-test model from MinIO to detect all buildings in 200m, identifies target building, and calculates zone appraisal value."
 )
 async def scan_radar_vision(
     req: RadarDetectRequest,
@@ -76,7 +76,7 @@ async def scan_radar_vision(
             )
             db.add(job_record)
 
-            raw_img_key = user_trigger.get("raw_image_url")
+            raw_img_key = user_trigger.get("raw_image_url") or (f"user_triggers/{job.job_id}.jpg" if job.job_id else None)
             price_pred = PricePrediction(
                 plot_id=land_plot.id,
                 job_id=job.job_id,
@@ -90,7 +90,9 @@ async def scan_radar_vision(
                 initial_polygons={
                     "coordinates": target_data.get("coordinates"),
                     "area_sqm": target_data.get("area_sqm"),
-                    "shape_type": target_data.get("shape_type", "polygon")
+                    "shape_type": target_data.get("shape_type", "polygon"),
+                    "normalized_polygon": target_data.get("normalized_polygon"),
+                    "target_box_normalized": target_data.get("target_box_normalized"),
                 },
                 initial_price_prediction=float(target_data.get("total_estimated_price") or 0.0),
                 target_prediction_year=2026,

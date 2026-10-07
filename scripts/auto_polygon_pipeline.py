@@ -144,7 +144,7 @@ def pixel_to_latlon(
     v: float,
     center_lat: float,
     center_lon: float,
-    zoom: int = 17
+    zoom: int = 19
 ) -> Tuple[float, float]:
     """
     แปลงพิกัดพิกเซล (u, v) บนภาพ 640x640 เป็นพิกัดจริง (Longitude, Latitude)
@@ -437,7 +437,7 @@ def extract_and_project_polygons_to_geojson(
     coords_dict: Dict[int, Tuple[float, float, str]],
     output_geojson_path: str,
     conf_threshold: float = 0.65,
-    zoom: int = 17
+    zoom: int = 19
 ) -> Dict[str, Any]:
     """
     นำโมเดลตัวใหม่มารันตรวจจับรูปภาพล่าสุด

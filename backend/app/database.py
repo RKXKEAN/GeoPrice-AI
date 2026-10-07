@@ -6,10 +6,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Convert postgres:// to postgresql:// if needed for SQLAlchemy 2.0
+# Convert postgres:// or postgresql:// to postgresql+psycopg2:// for SQLAlchemy
 db_url = settings.DATABASE_URL
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+elif db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
 
 engine = create_engine(
     db_url,

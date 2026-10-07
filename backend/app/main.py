@@ -24,16 +24,36 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Critical: Failed to initialize database: {e}")
 
+    # Ensure MinIO Buckets
+    try:
+        from app.services.minio_service import minio_service
+        for b in ["datasets", "images", "models", "mlflow-artifacts"]:
+            minio_service.ensure_bucket_exists(b)
+    except Exception as e:
+        logger.warning(f"Could not verify MinIO buckets: {e}")
+
     # Initialize ARQ Redis Pool
     try:
         await get_redis_pool()
     except Exception as e:
         logger.warning(f"Could not connect to Redis pool during startup: {e}")
 
+    # Launch Autonomous 24-Hour Vision Retraining Scheduler
+    try:
+        from app.services.vision_scheduler import start_vision_scheduler
+        start_vision_scheduler()
+    except Exception as e:
+        logger.warning(f"Could not start vision scheduler: {e}")
+
     yield
 
     # Teardown / Graceful Shutdown
     logger.info("Shutting down GeoPrice AI Backend API...")
+    try:
+        from app.services.vision_scheduler import stop_vision_scheduler
+        stop_vision_scheduler()
+    except Exception:
+        pass
     await close_redis_pool()
 
 app = FastAPI(

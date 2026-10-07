@@ -92,6 +92,7 @@ export async function fetchActiveGeoJSON(): Promise<any> {
 export interface TargetBuildingData {
   found: boolean;
   id?: string;
+  method?: string;
   confidence: number;
   shape_type?: 'polygon' | 'bbox';
   area_sqm: number;

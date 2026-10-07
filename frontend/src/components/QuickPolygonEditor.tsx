@@ -61,6 +61,8 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newPolyPoints, setNewPolyPoints] = useState<[number, number][]>([]);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageLoadError, setImageLoadError] = useState(false);
 
   // Vision retrain trigger state
   const [retrainingVision, setRetrainingVision] = useState(false);
@@ -71,26 +73,38 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   // 1. Load User Triggers (Pending HITL Review)
-  const loadUserTriggers = useCallback(async () => {
+  const loadUserTriggers = useCallback(async (preferredId?: number) => {
     setLoadingTriggers(true);
     try {
       const res = await adminApi.getPendingTriggers(50);
       setUserTriggers(res.triggers || []);
       if (res.triggers && res.triggers.length > 0) {
-        if (propSelectedTriggerId) {
+        if (preferredId) {
+          const match = res.triggers.find(t => t.id === preferredId);
+          if (match) setSelectedTrigger(match);
+          else setSelectedTrigger(res.triggers[0]);
+        } else if (propSelectedTriggerId) {
           const match = res.triggers.find(t => t.id === propSelectedTriggerId);
           if (match) setSelectedTrigger(match);
           else setSelectedTrigger(res.triggers[0]);
-        } else if (!selectedTrigger) {
-          setSelectedTrigger(res.triggers[0]);
+        } else {
+          setSelectedTrigger(prev => {
+            if (prev) {
+              const stillExists = res.triggers.find(t => t.id === prev.id);
+              if (stillExists) return stillExists;
+            }
+            return res.triggers[0];
+          });
         }
+      } else {
+        setSelectedTrigger(null);
       }
     } catch (err) {
       console.error('Failed to load pending triggers:', err);
     } finally {
       setLoadingTriggers(false);
     }
-  }, [propSelectedTriggerId, selectedTrigger]);
+  }, [propSelectedTriggerId]);
 
   useEffect(() => {
     loadUserTriggers();
@@ -168,7 +182,36 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
     }
   }, [selectedImage, confidence, dataMode, fetchImagePolygons]);
 
-  // 5. Populate Canvas when a User Trigger is Selected
+  // Helper: Project Geo coordinates (lat, lon) to normalized image pixels (0.0 to 1.0) on Zoom 19 tile patch
+  const geoToNormalized = (lat: number, lon: number, centerLat: number, centerLon: number): [number, number] => {
+    const zoom = 19;
+    const n = Math.pow(2, zoom);
+    const latRad = (centerLat * Math.PI) / 180.0;
+    const marginM = 15.0;
+    const latMargin = (200.0 + marginM) / 110574.0;
+    const lonMargin = (200.0 + marginM) / (111320.0 * Math.cos(latRad));
+
+    const minTx = Math.floor(((centerLon - lonMargin + 180.0) / 360.0) * n);
+    const maxTx = Math.floor(((centerLon + lonMargin + 180.0) / 360.0) * n);
+    const minTy = Math.floor((1.0 - Math.asinh(Math.tan(((centerLat + latMargin) * Math.PI) / 180.0)) / Math.PI) / 2.0 * n);
+    const maxTy = Math.floor((1.0 - Math.asinh(Math.tan(((centerLat - latMargin) * Math.PI) / 180.0)) / Math.PI) / 2.0 * n);
+
+    const imgW = (maxTx - minTx + 1) * 256.0;
+    const imgH = (maxTy - minTy + 1) * 256.0;
+
+    const targetLatRad = (lat * Math.PI) / 180.0;
+    const gx = ((lon + 180.0) / 360.0) * (256.0 * n);
+    const gy = (1.0 - Math.asinh(Math.tan(targetLatRad)) / Math.PI) / 2.0 * (256.0 * n);
+
+    const px = gx - minTx * 256.0;
+    const py = gy - minTy * 256.0;
+    return [
+      Math.max(0.005, Math.min(0.995, px / imgW)),
+      Math.max(0.005, Math.min(0.995, py / imgH))
+    ];
+  };
+
+  // 5. Populate Canvas when a User Trigger is Selected (Real MinIO Labels & Precise Fallback)
   useEffect(() => {
     if (dataMode === 'user_triggers' && selectedTrigger) {
       setSaveSuccessMsg(null);
@@ -177,57 +220,98 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
       setIsAddingNew(false);
       setNewPolyPoints([]);
 
-      // Parse BBoxes from user trigger
-      const bboxesList: PolygonPoint[] = [];
+      const imgKey = selectedTrigger.raw_image_url || `user_triggers/${selectedTrigger.job_id}.jpg`;
+      setLoading(true);
 
-      // Target building (ID #1, highlighted)
-      if (selectedTrigger.initial_polygons && selectedTrigger.initial_polygons.coordinates) {
-        // Can convert target bounding envelope
-        bboxesList.push({
-          id: 1,
-          class_id: 0,
-          label: 'Target Building (อาคารเป้าหมาย)',
-          confidence: 1.0,
-          is_human_reviewed: selectedTrigger.is_verified,
-          points: [
-            [0.44, 0.44],
-            [0.56, 0.44],
-            [0.56, 0.56],
-            [0.44, 0.56],
-          ]
-        });
-      }
+      const parseFromTriggerFallback = () => {
+        const bboxesList: PolygonPoint[] = [];
+        const centerLat = selectedTrigger.latitude;
+        const centerLon = selectedTrigger.longitude;
 
-      // Surrounding buildings
-      if (Array.isArray(selectedTrigger.initial_bboxes)) {
-        selectedTrigger.initial_bboxes.slice(0, 15).forEach((b: any, idx: number) => {
-          // Approximate normalized coordinates around center
-          const angle = (idx / 15) * 2 * Math.PI;
-          const r = 0.25 + (idx % 3) * 0.08;
-          const cx = Math.max(0.1, Math.min(0.9, 0.5 + Math.cos(angle) * r));
-          const cy = Math.max(0.1, Math.min(0.9, 0.5 + Math.sin(angle) * r));
-          const hw = 0.04;
-          const hh = 0.04;
+        // 1. Target building from initial_polygons
+        if (selectedTrigger.initial_polygons) {
+          const poly = selectedTrigger.initial_polygons;
+          if (Array.isArray(poly.normalized_polygon) && poly.normalized_polygon.length >= 3) {
+            bboxesList.push({
+              id: 1,
+              class_id: 0,
+              label: 'Target Building (อาคารเป้าหมาย)',
+              confidence: 1.0,
+              is_human_reviewed: selectedTrigger.is_verified,
+              points: poly.normalized_polygon
+            });
+          } else if (Array.isArray(poly.target_box_normalized) && poly.target_box_normalized.length === 4) {
+            const [x1, y1, x2, y2] = poly.target_box_normalized;
+            bboxesList.push({
+              id: 1,
+              class_id: 0,
+              label: 'Target Building (อาคารเป้าหมาย)',
+              confidence: 1.0,
+              is_human_reviewed: selectedTrigger.is_verified,
+              points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+            });
+          } else if (Array.isArray(poly.coordinates) && poly.coordinates.length >= 3) {
+            const pts = poly.coordinates.map((coord: any) => 
+              geoToNormalized(coord[1], coord[0], centerLat, centerLon)
+            );
+            bboxesList.push({
+              id: 1,
+              class_id: 0,
+              label: 'Target Building (อาคารเป้าหมาย)',
+              confidence: 1.0,
+              is_human_reviewed: selectedTrigger.is_verified,
+              points: pts
+            });
+          }
+        }
 
-          bboxesList.push({
-            id: idx + 2,
-            class_id: 0,
-            label: b.id || `Building #${idx + 2}`,
-            confidence: b.confidence || 0.75,
-            is_human_reviewed: false,
-            points: [
-              [cx - hw, cy - hh],
-              [cx + hw, cy - hh],
-              [cx + hw, cy + hh],
-              [cx - hw, cy + hh]
-            ]
+        // 2. Surrounding buildings from initial_bboxes
+        if (Array.isArray(selectedTrigger.initial_bboxes)) {
+          selectedTrigger.initial_bboxes.slice(0, 60).forEach((b: any, idx: number) => {
+            let pts: [number, number][] = [];
+            if (Array.isArray(b.norm_bbox) && b.norm_bbox.length === 4) {
+              const [x1, y1, x2, y2] = b.norm_bbox;
+              pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+            } else if (Array.isArray(b.coordinates) && b.coordinates.length >= 4) {
+              pts = b.coordinates.slice(0, 4).map((coord: any) =>
+                geoToNormalized(coord[1], coord[0], centerLat, centerLon)
+              );
+            }
+            if (pts.length >= 3) {
+              bboxesList.push({
+                id: idx + 2,
+                class_id: 0,
+                label: b.id || `Building #${idx + 2}`,
+                confidence: b.confidence || 0.85,
+                is_human_reviewed: false,
+                points: pts
+              });
+            }
           });
-        });
-      }
+        }
 
-      setPolygons(bboxesList);
-      setSelectedPolyId(1);
-      setIsHumanReviewed(selectedTrigger.is_verified);
+        setPolygons(bboxesList);
+        setSelectedPolyId(1);
+        setIsHumanReviewed(selectedTrigger.is_verified);
+      };
+
+      // Attempt loading real labels directly from MinIO
+      adminApi.getLabelSample(imgKey, 0.25)
+        .then(data => {
+          if (data && data.polygons && data.polygons.length > 0) {
+            setPolygons(data.polygons);
+            setSelectedPolyId(1);
+            setIsHumanReviewed(selectedTrigger.is_verified || !!data.is_human_reviewed);
+          } else {
+            parseFromTriggerFallback();
+          }
+        })
+        .catch(() => {
+          parseFromTriggerFallback();
+        })
+        .finally(() => {
+          setLoading(false);
+        });
     }
   }, [selectedTrigger, dataMode]);
 
@@ -395,6 +479,11 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
     ? `/api/v1/admin/minio/preview?bucket=images&object_name=${encodeURIComponent(selectedTrigger.raw_image_url || `user_triggers/${selectedTrigger.job_id}.jpg`)}`
     : `/api/v1/admin/minio/preview?bucket=images&object_name=${encodeURIComponent(selectedImage)}`;
 
+  useEffect(() => {
+    setImageLoaded(false);
+    setImageLoadError(false);
+  }, [previewImageUrl]);
+
   return (
     <div className="space-y-6 font-sans">
       {/* Mode Switcher Banner: User AOI Triggers vs Scheduled MinIO Folders */}
@@ -473,7 +562,7 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
               </select>
 
               <button
-                onClick={loadUserTriggers}
+                onClick={() => loadUserTriggers()}
                 disabled={loadingTriggers}
                 className="flex items-center gap-1 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-all"
                 title="รีเฟรชรายการคำขอ"
@@ -603,10 +692,40 @@ export const QuickPolygonEditor: React.FC<QuickPolygonEditorProps> = ({
 
           {/* Interactive Image & SVG Canvas */}
           <div className="relative w-full max-w-[640px] aspect-square mx-auto bg-slate-950 rounded-xl overflow-hidden border border-slate-800 shadow-2xl select-none">
+            {/* Image Loading State */}
+            {!imageLoaded && !imageLoadError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/80 z-10 pointer-events-none">
+                <Loader2 className="w-8 h-8 text-cyan-400 animate-spin mb-2" />
+                <span className="text-xs text-slate-300 font-medium">กำลังโหลดภาพถ่ายดาวเทียม...</span>
+                <span className="text-[11px] text-slate-500 mt-1">ระบบกำลังเตรียมภาพความละเอียดสูงจาก MinIO</span>
+              </div>
+            )}
+
+            {/* Image Error Fallback */}
+            {imageLoadError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/90 z-10 pointer-events-none">
+                <AlertCircle className="w-8 h-8 text-amber-400 mb-2" />
+                <span className="text-xs text-slate-200 font-semibold">ไม่พบไฟล์ภาพถ่ายในระบบจัดเก็บ</span>
+                <span className="text-[11px] text-slate-400 mt-1 max-w-sm">
+                  รายการนี้อาจถูกล้างประวัติไปแล้ว หรือระบบกำลังเตรียมภาพใหม่ — คุณสามารถคลิกสแกนใหม่จากหน้าแผนที่หลักได้ตลอดเวลา
+                </span>
+              </div>
+            )}
+
             <img
               src={previewImageUrl}
               alt="Satellite Tile"
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              onLoad={() => {
+                setImageLoaded(true);
+                setImageLoadError(false);
+              }}
+              onError={() => {
+                setImageLoaded(false);
+                setImageLoadError(true);
+              }}
+              className={`absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${
+                imageLoaded ? 'opacity-100' : 'opacity-20'
+              }`}
             />
 
             {/* Interactive SVG Overlay */}
