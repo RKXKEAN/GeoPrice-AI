@@ -63,12 +63,21 @@ def update_prediction_results(
             init_boxes = (sibling.initial_bboxes if sibling else None) or (payload.details.get("initial_bboxes") if isinstance(payload.details, dict) else None)
             init_poly = (sibling.initial_polygons if sibling else None) or (payload.details.get("initial_polygons") if isinstance(payload.details, dict) else None)
 
+            target_yr = int(payload.details.get("target_year") or 2026) if isinstance(payload.details, dict) else 2026
+            base_sqm_val = float(payload.details.get("base_price_per_sqm_thb") or (float(payload.details.get("base_price_wah", 0)) / 4.0) or sqm_price) if isinstance(payload.details, dict) else sqm_price
+            plot_area = float(job.land_plot.area_size_sqm if job.land_plot and job.land_plot.area_size_sqm else 100.0)
+            base_tot_val = round(base_sqm_val * plot_area, 2)
+
             if prediction:
                 prediction.predicted_price_per_sqm = sqm_price
                 prediction.total_predicted_price = total_price
                 prediction.confidence_score = confidence
                 prediction.model_version = version
                 prediction.details_json = payload.details
+                prediction.target_prediction_year = target_yr
+                prediction.base_price_current_year = base_tot_val
+                prediction.base_price_per_sqm = base_sqm_val
+                prediction.initial_price_prediction = total_price
                 if not prediction.raw_image_url and raw_img:
                     prediction.raw_image_url = raw_img
                 if not prediction.initial_bboxes and init_boxes:
@@ -87,8 +96,10 @@ def update_prediction_results(
                     raw_image_url=raw_img,
                     initial_bboxes=init_boxes,
                     initial_polygons=init_poly,
+                    base_price_current_year=base_tot_val,
+                    base_price_per_sqm=base_sqm_val,
                     initial_price_prediction=total_price,
-                    target_prediction_year=2026,
+                    target_prediction_year=target_yr,
                     is_verified=False
                 )
                 db.add(prediction)

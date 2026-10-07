@@ -79,11 +79,15 @@ async def scan_radar_vision(
             db.add(job_record)
 
             raw_img_key = user_trigger.get("raw_image_url") or (f"user_triggers/{job.job_id}.jpg" if job.job_id else None)
+            base_p_sqm = float(target_data.get("price_per_sqm") or (target_data.get("price_per_wah", 0) / 4.0))
+            base_p_tot = float(target_data.get("total_estimated_price") or 0.0)
             price_pred = PricePrediction(
                 plot_id=land_plot.id,
                 job_id=job.job_id,
-                predicted_price_per_sqm=float(target_data.get("price_per_sqm") or (target_data.get("price_per_wah", 0) / 4.0)),
-                total_predicted_price=float(target_data.get("total_estimated_price") or 0.0),
+                predicted_price_per_sqm=base_p_sqm,
+                total_predicted_price=base_p_tot,
+                base_price_current_year=base_p_tot,
+                base_price_per_sqm=base_p_sqm,
                 confidence_score=float(target_data.get("confidence") or 0.90),
                 model_version=radar_sum.get("valuation_source") or "geoprice-hybrid-vision-v1",
                 details_json=radar_sum,
@@ -96,7 +100,7 @@ async def scan_radar_vision(
                     "normalized_polygon": target_data.get("normalized_polygon"),
                     "target_box_normalized": target_data.get("target_box_normalized"),
                 },
-                initial_price_prediction=float(target_data.get("total_estimated_price") or 0.0),
+                initial_price_prediction=base_p_tot,
                 target_prediction_year=2026,
                 is_verified=False
             )

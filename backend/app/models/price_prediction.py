@@ -22,7 +22,9 @@ class PricePrediction(Base):
     # State 1: Initial YOLO + OpenCV extraction & initial price prediction
     initial_bboxes = Column(JSON, nullable=True)             # Raw YOLO detection bboxes
     initial_polygons = Column(JSON, nullable=True)           # Stage 2 contour vertices & roof area
-    initial_price_prediction = Column(Float, nullable=True)  # Initial estimated price (THB)
+    base_price_current_year = Column(Float, nullable=True)   # Base current appraisal year price (THB)
+    base_price_per_sqm = Column(Float, nullable=True)        # Base current price per sq.m. (THB)
+    initial_price_prediction = Column(Float, nullable=True)  # Future estimated price for target year (THB)
     target_prediction_year = Column(Integer, nullable=True, default=2026)
 
     # State 2: Human-in-the-loop (HITL) Re-labeled / Corrected

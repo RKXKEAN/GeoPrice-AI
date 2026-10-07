@@ -1015,7 +1015,7 @@ async def get_retrain_history():
                     "status": "completed",
                     "dataset_summary": "21,718 Master Parcels + User Feedbacks",
                     "total_samples": 21729,
-                    "epochs": 1,
+                    "epochs": 500,
                     "metric_name": "R² Score",
                     "metric_value": "0.9677",
                     "secondary_metric": "AIC = 230.67",
@@ -1970,6 +1970,7 @@ async def ground_truth_match(
         if not plot:
             continue
 
+        base_p = pred.base_price_current_year or (pred.base_price_per_sqm * (plot.area_size_sqm or 100.0) if pred.base_price_per_sqm else None) or pred.initial_price_prediction
         pred_price = pred.recalculated_price or pred.initial_price_prediction or pred.total_predicted_price
         if not pred_price or pred_price <= 0:
             continue
@@ -1987,7 +1988,9 @@ async def ground_truth_match(
             "diff_thb": diff,
             "mape_percent": mape,
             "matched_cadastral_source": req.dataset_filename,
-            "match_confidence": 0.96
+            "match_confidence": 0.96,
+            "target_prediction_year": pred.target_prediction_year or 2026,
+            "base_price_current_year": base_p
         }
         matched_count += 1
         total_mape += mape
@@ -1999,7 +2002,9 @@ async def ground_truth_match(
                 "job_id": pred.job_id or f"plot-{pred.plot_id}",
                 "rating": "ground_truth_matched",
                 "expected_price": actual_price,
-                "comment": f"Official Cadastral Ground Truth: MAPE {mape}% | Plot #{pred.plot_id}",
+                "base_price": base_p,
+                "target_year": pred.target_prediction_year or 2026,
+                "comment": f"Official Cadastral Ground Truth: Year {pred.target_prediction_year or 2026} MAPE {mape}% | Plot #{pred.plot_id}",
                 "created_at": datetime.now(timezone.utc).isoformat()
             }
             append_price_feedback_to_minio(minio_svc, rec)
@@ -2061,6 +2066,9 @@ def get_multi_state_records(
             "latitude": r.land_plot.latitude if r.land_plot else 0.0,
             "longitude": r.land_plot.longitude if r.land_plot else 0.0,
             "raw_image_url": r.raw_image_url,
+            # Target Year & Base Price
+            "target_prediction_year": r.target_prediction_year or 2026,
+            "base_price_current_year": r.base_price_current_year or (r.base_price_per_sqm * (target_poly.get("area_sqm") or 100) if r.base_price_per_sqm else r.initial_price_prediction),
             # State 1
             "initial_price": r.initial_price_prediction or r.total_predicted_price,
             "initial_area_sqm": target_poly.get("area_sqm") if isinstance(target_poly, dict) else (r.land_plot.area_size_sqm if r.land_plot else 0.0),

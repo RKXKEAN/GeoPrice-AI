@@ -1944,8 +1944,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
                           <td className="py-2.5 px-3 font-sans text-zinc-300 truncate max-w-[200px]" title={item.dataset_summary}>
                             {item.dataset_summary}
                           </td>
-                          <td className="py-2.5 px-3 text-center text-zinc-300 font-bold">
-                            {item.epochs} รอบ
+                          <td className="py-2.5 px-3 text-center text-zinc-300 font-bold font-mono">
+                            {item.epochs} {item.model_type?.includes('Price') ? 'Rounds' : 'Epochs'}
                           </td>
                           <td className="py-2.5 px-3 font-semibold text-emerald-400">
                             {item.metric_name}: {item.metric_value}
@@ -2316,7 +2316,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
                   <thead className="bg-zinc-950/60 text-zinc-400 uppercase tracking-wider text-[10px] font-mono border-b border-white/[0.06]">
                     <tr>
                       <th className="py-3 px-4">รหัส / แปลงที่ดิน</th>
-                      <th className="py-3 px-4">State 1: ราคาทำนายแรก</th>
+                      <th className="py-3 px-4">ปีเป้าหมาย & ฐานราคา</th>
+                      <th className="py-3 px-4">State 1: ราคาทำนายเป้าหมาย</th>
                       <th className="py-3 px-4">State 2: ราคาคำนวณซ้ำ (HITL)</th>
                       <th className="py-3 px-4">State 3: ราคาจริง (Treasury)</th>
                       <th className="py-3 px-4">MAPE (%) / ส่วนต่าง</th>
@@ -2334,6 +2335,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
                             </div>
                             <div className="text-[10px] text-zinc-500 font-mono">
                               ({r.latitude.toFixed(4)}, {r.longitude.toFixed(4)})
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            <div className="font-mono font-bold text-indigo-400 flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] border border-indigo-500/30 font-semibold">
+                                ปี {r.target_prediction_year || 2026}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-zinc-400 mt-1 font-mono">
+                              ฐาน (2026): ฿{Math.round(r.base_price_current_year || r.initial_price).toLocaleString()}
                             </div>
                           </td>
 

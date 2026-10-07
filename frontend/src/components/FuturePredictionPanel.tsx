@@ -293,17 +293,15 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
                     name: 'XGBoost Regressor',
                     badge: 'Spatial ML',
                     metric: 'R² 0.968',
-                    desc: 'วิเคราะห์เชิงพื้นที่ 17 ปัจจัย + รัศมีอาคาร 200 ม.',
-                    tag: 'แปลงเฉพาะ & ซื้อขาย',
+                    info: '17 ปัจจัยเชิงพื้นที่',
                     activeColor: 'border-cyan-500/80 bg-cyan-950/40 text-cyan-300 ring-1 ring-cyan-500/30',
                   },
                   {
                     id: 'arimax',
                     name: 'ARIMAX (1,1,0)',
-                    badge: 'Econometrics',
+                    badge: 'Time-Series',
                     metric: 'AIC 230.7',
-                    desc: 'วิเคราะห์อนุกรมเวลา 17 ปี + อัตราเงินเฟ้อ',
-                    tag: 'ระยะยาว & วางแผนลงทุน',
+                    info: '5 ปัจจัยมหภาค',
                     activeColor: 'border-purple-500/80 bg-purple-950/40 text-purple-300 ring-1 ring-purple-500/30',
                   },
                 ].map((m) => (
@@ -321,17 +319,16 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
                       <div className="flex items-center justify-between gap-1 mb-1">
                         <span className="text-xs font-bold text-white truncate">{m.name}</span>
                         <span
-                          className={`text-[9px] font-mono px-1 py-0.2 rounded shrink-0 font-semibold ${
+                          className={`text-[9px] font-mono px-1.5 py-0.2 rounded shrink-0 font-semibold ${
                             selectedModel === m.id ? 'bg-white/15 text-white' : 'bg-slate-800 text-slate-400'
                           }`}
                         >
                           {m.metric}
                         </span>
                       </div>
-                      <div className="text-[10px] text-slate-300 leading-tight">{m.desc}</div>
                     </div>
                     <div className="mt-2 pt-1.5 border-t border-white/5 flex items-center justify-between text-[9px]">
-                      <span className="text-slate-400">{m.tag}</span>
+                      <span className="text-slate-400">{m.info}</span>
                       <span
                         className={`px-1.5 py-0.2 rounded font-mono text-[8.5px] ${
                           selectedModel === m.id ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-500'

@@ -425,6 +425,8 @@ export interface MultiStateRecordItem {
   recalculated_area_sqm?: number;
   actual_market_price?: number;
   actual_recorded_at?: string;
+  target_prediction_year?: number;
+  base_price_current_year?: number;
   error_metrics?: {
     predicted_price: number;
     actual_price: number;
@@ -432,6 +434,8 @@ export interface MultiStateRecordItem {
     mape_percent: number;
     matched_cadastral_source: string;
     match_confidence: number;
+    target_prediction_year?: number;
+    base_price_current_year?: number;
   };
   created_at: string;
 }

@@ -21,3 +21,4 @@ backend/app/data/
 ai_worker/*.csv
 *harvested*.json
 PROJECT_KNOWLEDGE.md
+PROJECT_REPORT_AND_BROCHURE.md
