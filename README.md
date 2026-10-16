@@ -305,5 +305,4 @@ docker restart geoprice-frontend
   * ข้อมูลแปลงที่ดินและขอบเขตพื้นที่: [กรมที่ดิน (Department of Lands, Thailand)](https://www.dol.go.th/)
   * ข้อมูลราคาประเมินทุนทรัพย์ที่ดินรอบบัญชี: [กรมธนารักษ์ (The Treasury Department, Thailand)](https://www.treasury.go.th/)
   * ข้อมูลโครงข่ายถนนและสถานที่สำคัญ: [OpenStreetMap](https://www.openstreetmap.org/) และ [OSRM Project](http://project-osrm.org/)
-* **ผู้พัฒนา:** โครงการวิจัยและพัฒนานวัตกรรม GeoPrice AI (สงขลา - หาดใหญ่)
-* **สัญญาอนุญาต:** MIT License - สามารถนำไปศึกษาและพัฒนาต่อยอดได้ตามเงื่อนไขของสัญญาอนุญาต
+* **ผู้พัฒนา:** นักศึกษามหาวิทยาลัยสงขลานครินทร์ รหัสนักศึกษา 6710110028  6710110138  6710110312
