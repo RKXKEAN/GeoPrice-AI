@@ -33,7 +33,7 @@ interface SubdistrictProfile {
   roads: RoadProfile[];
 }
 
-const SUBDISTRICT_DATABASE: Record<string, SubdistrictProfile> = {
+export const SUBDISTRICT_DATABASE: Record<string, SubdistrictProfile> = {
   'หาดใหญ่': {
     district: 'อำเภอหาดใหญ่',
     province: 'สงขลา',

@@ -381,7 +381,7 @@ export const MapComponent = ({
 
     try {
       // Execute 200m YOLOv8 AI Vision inference
-      const res = await scanVisionRadar(lat, lng, 200.0, 0.25);
+      const res = await scanVisionRadar(lat, lng, 200.0, 0.30);
       onVisionResult?.(res);
       onRadarScanned?.(res.radar_summary.total_buildings_detected);
 

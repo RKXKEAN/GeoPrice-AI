@@ -15,19 +15,44 @@ import numpy as np
 _fastsam_model = None
 
 def get_fastsam_model():
-    """Dynamically load and cache FastSAM foundation model for zero-shot roof segmentation."""
+    """Dynamically download from MinIO and cache FastSAM foundation model for zero-shot roof segmentation."""
     global _fastsam_model
     if _fastsam_model is None:
-        model_path = os.path.join(os.path.dirname(__file__), "FastSAM-s.pt")
-        if not os.path.exists(model_path):
-            model_path = "FastSAM-s.pt"
-        if os.path.exists(model_path):
+        target_key = os.getenv("FASTSAM_MODEL_KEY", "foundation_models/FastSAM-s.pt")
+        local_cache = "/tmp/geoprice_FastSAM-s.pt"
+
+        # 1. Download from MinIO if not already in local cache
+        if not os.path.exists(local_cache):
+            try:
+                import boto3
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=f"http://{os.getenv('MINIO_URL', 'minio:9000')}",
+                    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "admin"),
+                    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "password123"),
+                )
+                print(f"🤖 [Contour Extractor] 📥 Downloading FastSAM foundation model ({target_key}) from MinIO...")
+                s3.download_file("models", target_key, local_cache)
+                print(f"🤖 [Contour Extractor] ✅ FastSAM model downloaded to cache ({local_cache})")
+            except Exception as e:
+                print(f"⚠️ [Contour Extractor] MinIO FastSAM download warning ({target_key}): {e}")
+                # Fallback to local file in ai_worker directory if available
+                local_fallback = os.path.join(os.path.dirname(__file__), "FastSAM-s.pt")
+                if os.path.exists(local_fallback):
+                    local_cache = local_fallback
+
+        # 2. Initialize FastSAM model
+        if os.path.exists(local_cache):
             try:
                 from ultralytics import FastSAM
-                _fastsam_model = FastSAM(model_path)
-                print(f"🤖 [Contour Extractor] Loaded FastSAM Foundation Model ({model_path})")
+                _fastsam_model = FastSAM(local_cache)
+                print(f"🤖 [Contour Extractor] 🧠 FastSAM Foundation Model ready in memory! ({local_cache})")
             except Exception as e:
                 print(f"⚠️ [Contour Extractor] FastSAM init warning: {e}")
+                _fastsam_model = None
+        else:
+            print("⚠️ [Contour Extractor] FastSAM weights not found in MinIO or local storage.")
+
     return _fastsam_model
 
 

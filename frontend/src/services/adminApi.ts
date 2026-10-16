@@ -380,6 +380,11 @@ export const adminApi = {
   async resetModelSlots(): Promise<{ status: string; message: string; active_slots: any }> {
     const res = await axios.post(`${API_BASE}/model-slots/reset`);
     return res.data;
+  },
+
+  async getDatabaseStats(): Promise<DatabaseStatsResponse> {
+    const res = await axios.get(`${API_BASE}/database/stats-and-tables`);
+    return res.data;
   }
 };
 
@@ -437,6 +442,35 @@ export interface MultiStateRecordItem {
     target_prediction_year?: number;
     base_price_current_year?: number;
   };
+  model_comparisons?: Record<string, {
+    id?: string;
+    name?: string;
+    short_name?: string;
+    price_per_wah?: number;
+    future_price_per_wah?: number;
+    price_per_sqm?: number;
+    total_price?: number;
+    growth_pct?: number;
+    r2?: number;
+    mae?: number;
+    metric_label?: string;
+    metric_value?: string;
+    eval_metric?: string;
+    error_band?: string;
+    model_type?: string;
+    tag?: string;
+    weight_desc?: string;
+    is_active?: boolean;
+    diff_from_ground_truth_pct?: number;
+  }>;
+  official_ground_truth?: {
+    parcel_id?: string;
+    price_per_wah?: number;
+    nearest_dist_m?: number;
+    note?: string;
+  };
+  selected_model?: string;
+  prediction_years?: number;
   created_at: string;
 }
 
@@ -548,4 +582,39 @@ export interface SwitchModelSlotResponse {
     slot3_vision: ModelSlotDetail;
   };
 }
+
+export interface TableColumnInfo {
+  name: string;
+  type: string;
+  constraints: string;
+  nullable: boolean;
+  description: string;
+}
+
+export interface TableSchemaInfo {
+  name: string;
+  display_name: string;
+  description: string;
+  row_count: number;
+  primary_key: string;
+  columns: TableColumnInfo[];
+  relationships: string[];
+  breakdown?: Record<string, any>;
+  active_dataset?: string | null;
+  sample_rows: any[];
+}
+
+export interface DatabaseStatsResponse {
+  status: string;
+  database_info: {
+    name: string;
+    engine: string;
+    port: number;
+    total_tables: number;
+    total_records: number;
+    status: string;
+  };
+  tables: TableSchemaInfo[];
+}
+
 

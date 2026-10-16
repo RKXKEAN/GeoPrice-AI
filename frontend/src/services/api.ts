@@ -152,7 +152,7 @@ export async function scanVisionRadar(
   latitude: number,
   longitude: number,
   radiusMeters: number = 200.0,
-  confThreshold: number = 0.25
+  confThreshold: number = 0.30
 ): Promise<RadarVisionResponse> {
   const response = await apiClient.post<RadarVisionResponse>(
     '/api/v1/vision/radar-detect',

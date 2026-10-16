@@ -16,7 +16,7 @@ class RadarDetectRequest(BaseModel):
     latitude: float = Field(..., description="Latitude of clicked / inspected point")
     longitude: float = Field(..., description="Longitude of clicked / inspected point")
     radius_meters: Optional[float] = Field(200.0, description="Radar scan radius in meters (default 200m)")
-    conf_threshold: Optional[float] = Field(0.25, description="YOLO confidence threshold (default 0.25)")
+    conf_threshold: Optional[float] = Field(0.30, description="YOLO confidence threshold (default 0.30)")
 
 @router.post(
     "/radar-detect",
@@ -40,7 +40,7 @@ async def scan_radar_vision(
             latitude=req.latitude,
             longitude=req.longitude,
             radius_meters=req.radius_meters or 200.0,
-            conf_threshold=req.conf_threshold or 0.25,
+            conf_threshold=req.conf_threshold if req.conf_threshold is not None else 0.30,
             _queue_name=QUEUE_INFERENCE,
         )
         logger.info(f"Enqueued vision radar job: {job.job_id} for ({req.latitude}, {req.longitude})")

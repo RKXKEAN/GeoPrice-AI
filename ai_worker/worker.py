@@ -2011,7 +2011,7 @@ async def recalculate_corrected_building_contour(
 async def extract_image_polygons(
     ctx,
     image_key: str = "2022_01-06/img_0001.jpg",
-    conf_threshold: float = 0.25,
+    conf_threshold: float = 0.30,
     **kwargs
 ):
     """
@@ -2441,7 +2441,7 @@ async def radar_vision_detect(
     latitude: float,
     longitude: float,
     radius_meters: float = 200.0,
-    conf_threshold: float = 0.25,
+    conf_threshold: float = 0.30,
     **kwargs
 ):
     """
@@ -2522,9 +2522,9 @@ async def radar_vision_detect(
     yolo_imgsz = int(os.getenv("YOLO_IMGSZ", "1024"))
     # Adaptive NMS threshold to prevent overlapping duplicate boxes
     yolo_iou = float(os.getenv("YOLO_IOU", "0.45"))
-    # Optimal confidence threshold 0.22 (satellite roofs average 0.35-0.45, 0.22 ensures dark/rusty roofs are detected)
-    default_conf = float(os.getenv("YOLO_CONF", "0.22"))
-    effective_conf = min(conf_threshold, default_conf) if conf_threshold else default_conf
+    # Balanced optimal confidence threshold 0.30 (detects buildings accurately with sharp boundary separation)
+    default_conf = float(os.getenv("YOLO_CONF", "0.30"))
+    effective_conf = conf_threshold if conf_threshold is not None else default_conf
     try:
         results = model(stitched, device=device, imgsz=yolo_imgsz, conf=effective_conf, iou=yolo_iou, verbose=False)
     except Exception as e:
@@ -2545,6 +2545,13 @@ async def radar_vision_detect(
     for i, b in enumerate(boxes):
         xyxy = b.xyxy[0].tolist()
         xmin, ymin, xmax, ymax = xyxy
+        # Filter out extreme noise (< 10 m²) or extreme anomalies (> 25,000 m²)
+        b_w_m = (xmax - xmin) * m_per_px
+        b_l_m = (ymax - ymin) * m_per_px
+        b_area_sqm = b_w_m * b_l_m
+        if b_area_sqm < 10.0 or b_area_sqm > 25000.0:
+            continue
+
         # Direct hit: click is inside this building bounding box
         if xmin <= local_px <= xmax and ymin <= local_py <= ymax:
             matched_target_box = (float(xmin), float(ymin), float(xmax), float(ymax))
@@ -2653,6 +2660,11 @@ async def radar_vision_detect(
 
         w_m = round((xmax - xmin) * m_per_px, 1)
         l_m = round((ymax - ymin) * m_per_px, 1)
+        final_area_sqm = round(w_m * l_m, 1)
+
+        # Filter out extreme noise (< 10 m²) or extreme anomalies (> 25,000 m²)
+        if final_area_sqm < 10.0 or final_area_sqm > 25000.0:
+            continue
 
         # Surrounding context buildings (200m radar) are strictly Rectilinear Bounding Boxes for density & clean GIS display
         top_lat, left_lon = pixel_to_geo(xmin, ymin)
@@ -2664,7 +2676,6 @@ async def radar_vision_detect(
             [left_lon, bottom_lat],
             [left_lon, top_lat],
         ]
-        final_area_sqm = round(w_m * l_m, 1)
         shape_type = "bbox"
 
         surrounding_blds.append({

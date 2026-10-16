@@ -7,9 +7,6 @@ import {
   Radio,
   AlertCircle,
   X,
-  ChevronDown,
-  ChevronUp,
-  Sliders,
   GripHorizontal,
   RotateCcw,
   Minus,
@@ -22,10 +19,10 @@ interface FuturePredictionPanelProps {
   isOpen: boolean;
   onClose: () => void;
   plotData: DrawnPlotData | null;
-  selectedModel: 'xgboost' | 'arimax';
-  setSelectedModel: (model: 'xgboost' | 'arimax') => void;
-  forceModel: boolean;
-  setForceModel: (force: boolean) => void;
+  selectedModel?: 'xgboost' | 'arimax';
+  setSelectedModel?: (model: 'xgboost' | 'arimax') => void;
+  forceModel?: boolean;
+  setForceModel?: (force: boolean) => void;
   predictionYears: number;
   setPredictionYears: (years: number) => void;
   onPredict: () => void;
@@ -33,18 +30,18 @@ interface FuturePredictionPanelProps {
   submissionError: string | null;
   activeJob: PredictionJobResponse | null;
   jobResult: PredictionResult | null;
-  showModelComparison: boolean;
-  setShowModelComparison: (show: boolean) => void;
+  showModelComparison?: boolean;
+  setShowModelComparison?: (show: boolean) => void;
 }
 
 export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
   isOpen,
   onClose,
   plotData,
-  selectedModel,
-  setSelectedModel,
-  forceModel,
-  setForceModel,
+  selectedModel: _selectedModel = 'arimax',
+  setSelectedModel: _setSelectedModel,
+  forceModel: _forceModel = true,
+  setForceModel: _setForceModel,
   predictionYears,
   setPredictionYears,
   onPredict,
@@ -52,8 +49,8 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
   submissionError,
   activeJob,
   jobResult,
-  showModelComparison,
-  setShowModelComparison,
+  showModelComparison: _showModelComparison = false,
+  setShowModelComparison: _setShowModelComparison,
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
@@ -219,7 +216,7 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-bold text-white flex items-center gap-1.5 truncate">
-                <span>แผงวิเคราะห์และเปรียบเทียบโมเดล</span>
+                <span>แผงทำนายราคาในอนาคต (ARIMAX)</span>
                 <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40">
                   {targetYear}
                 </span>
@@ -275,84 +272,19 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
         {/* Panel Scrollable Body (Hidden if Minimized) */}
         {!isMinimized && (
           <div className="p-4 sm:p-5 space-y-4 overflow-y-auto custom-scrollbar flex-1">
-            {/* Algorithm Model Selector (XGBoost vs ARIMAX) */}
-            <div className="bg-slate-900/70 p-3.5 rounded-xl border border-slate-800/90 space-y-2.5">
+            {/* ARIMAX Econometric Engine Card (Single Model for Users) */}
+            <div className="bg-slate-900/70 p-3.5 rounded-xl border border-purple-500/30 space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Cpu className="w-3.5 h-3.5 text-cyan-400" /> เลือกอัลกอริทึม AI
-                </label>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-white/10 font-bold">
-                  {selectedModel === 'xgboost' ? 'R² 0.968 (Spatial ML)' : 'AIC 230.7 (Time-Series)'}
+                <span className="text-xs font-semibold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <TrendingUp className="w-3.5 h-3.5 text-purple-400" /> โมเดลคาดการณ์เศรษฐมิติ
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold">
+                  ARIMAX (1,1,0)
                 </span>
               </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  {
-                    id: 'xgboost',
-                    name: 'XGBoost Regressor',
-                    badge: 'Spatial ML',
-                    metric: 'R² 0.968',
-                    info: '17 ปัจจัยเชิงพื้นที่',
-                    activeColor: 'border-cyan-500/80 bg-cyan-950/40 text-cyan-300 ring-1 ring-cyan-500/30',
-                  },
-                  {
-                    id: 'arimax',
-                    name: 'ARIMAX (1,1,0)',
-                    badge: 'Time-Series',
-                    metric: 'AIC 230.7',
-                    info: '5 ปัจจัยมหภาค',
-                    activeColor: 'border-purple-500/80 bg-purple-950/40 text-purple-300 ring-1 ring-purple-500/30',
-                  },
-                ].map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setSelectedModel(m.id as any)}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between touch-manipulation ${
-                      selectedModel === m.id
-                        ? `${m.activeColor} shadow-md`
-                        : 'bg-slate-900/90 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-1 mb-1">
-                        <span className="text-xs font-bold text-white truncate">{m.name}</span>
-                        <span
-                          className={`text-[9px] font-mono px-1.5 py-0.2 rounded shrink-0 font-semibold ${
-                            selectedModel === m.id ? 'bg-white/15 text-white' : 'bg-slate-800 text-slate-400'
-                          }`}
-                        >
-                          {m.metric}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="mt-2 pt-1.5 border-t border-white/5 flex items-center justify-between text-[9px]">
-                      <span className="text-slate-400">{m.info}</span>
-                      <span
-                        className={`px-1.5 py-0.2 rounded font-mono text-[8.5px] ${
-                          selectedModel === m.id ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-500'
-                        }`}
-                      >
-                        {m.badge}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              {/* Checkbox: Force ML Model */}
-              <label className="flex items-start gap-2 pt-1 text-xs text-slate-300 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={forceModel}
-                  onChange={(e) => setForceModel(e.target.checked)}
-                  className="mt-0.5 w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
-                />
-                <span className="text-[11px] text-slate-400 leading-tight">
-                  บังคับใช้โมเดลเพื่อตรวจสอบและวัดความคลาดเคลื่อน (Residual Error) เทียบกับราคาจริงกรมธนารักษ์
-                </span>
-              </label>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                ระบบคำนวณแนวโน้มราคาล่วงหน้าอัตโนมัติด้วยโมเดล Time-Series Econometrics ผสานอัตราเงินเฟ้อ (Inflation) และสถิติการเติบโตของราคาประเมิน
+              </p>
             </div>
 
             {/* Prediction Horizon Slider (1-5 Years) */}
@@ -417,7 +349,7 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4 text-purple-200" />
-                    <span>คำนวณและประเมินราคา ({selectedModel.toUpperCase()})</span>
+                    <span>คำนวณและประเมินราคาล่วงหน้า (ARIMAX)</span>
                   </>
                 )}
               </button>
@@ -550,160 +482,6 @@ export const FuturePredictionPanel: React.FC<FuturePredictionPanelProps> = ({
                             </div>
                           ))}
                         </div>
-                      </div>
-                    )}
-
-                    {/* Multi-Model Inspection & Variance Table */}
-                    {jobResult.price_prediction.details_json?.model_comparisons && (
-                      <div className="bg-slate-900/90 rounded-xl border border-slate-800 p-3 space-y-2">
-                        <div
-                          onClick={() => setShowModelComparison(!showModelComparison)}
-                          className="flex items-center justify-between cursor-pointer select-none py-0.5"
-                        >
-                          <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
-                            <Sliders className="w-3.5 h-3.5" />
-                            <span>เปรียบเทียบราคาประเมินและโมเดล AI (Ground Truth vs ML)</span>
-                          </div>
-                          <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
-                            <span>{showModelComparison ? 'ซ่อน' : 'แสดงตาราง'}</span>
-                            {showModelComparison ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </div>
-                        </div>
-
-                        {showModelComparison && (
-                          <div className="pt-2 border-t border-slate-800/80 space-y-2 text-xs">
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-[10px] text-left">
-                                <thead className="text-slate-400 border-b border-slate-800">
-                                  <tr>
-                                    <th className="py-1.5 px-1 font-medium">โมเดล / แหล่งข้อมูล</th>
-                                    <th className="py-1.5 px-1 font-medium text-right">ราคา/ตร.ว.</th>
-                                    <th className="py-1.5 px-1 font-medium text-center">เติบโต ({predictionYears} ปี)</th>
-                                    <th className="py-1.5 px-1 font-medium text-right">ความคลาดเคลื่อน</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-800/50">
-                                  {Object.entries(jobResult.price_prediction.details_json.model_comparisons).map(
-                                    ([key, comp]: [string, any]) => {
-                                      const isSelected = comp.is_active !== undefined
-                                        ? Boolean(comp.is_active)
-                                        : key === selectedModel;
-                                      
-                                      // Compute Growth % accurately:
-                                      let growthVal: number = 0;
-                                      if (typeof comp.growth_pct === 'number') {
-                                        growthVal = comp.growth_pct;
-                                      } else if (isSelected || comp.is_active) {
-                                        growthVal = Number(jobResult.price_prediction?.details_json?.total_growth_pct ?? 0);
-                                      } else {
-                                        growthVal = Number(jobResult.price_prediction?.details_json?.total_growth_pct ?? 0);
-                                      }
-
-                                      // Price to display (future projected price or base price)
-                                      const displayPrice = comp.future_price_per_wah || comp.price_per_wah;
-
-                                      // Error / MAE / Residual metric:
-                                      const maeVal = comp.mae !== undefined && comp.mae !== null
-                                        ? `±฿${Math.round(comp.mae).toLocaleString()}`
-                                        : (key === 'xgboost' ? '±฿3,198' : '±฿2,840');
-                                      const metricLabel = comp.eval_metric || comp.error_band || maeVal;
-                                      const scoreInfo = comp.metric_value 
-                                        ? `${comp.metric_label?.split(' ')[0] || 'Score'} ${comp.metric_value}` 
-                                        : (comp.r2 ? `R² ${comp.r2}` : null);
-
-                                      // Row highlight style
-                                      const rowBgClass = isSelected
-                                        ? key === 'arimax'
-                                          ? 'bg-purple-950/40 text-purple-300 font-semibold'
-                                          : 'bg-cyan-950/40 text-cyan-300 font-semibold'
-                                        : 'text-slate-300 hover:bg-slate-800/40';
-
-                                      const badgeClass = key === 'arimax'
-                                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
-                                        : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30';
-
-                                      const badgeText = key === 'arimax'
-                                        ? 'ใช้งาน (Time-Series)'
-                                        : 'ใช้งาน (Spatial ML)';
-
-                                      return (
-                                        <tr 
-                                          key={key} 
-                                          className={`transition-colors ${rowBgClass}`}
-                                        >
-                                          <td className="py-2 px-1">
-                                            <div className="font-bold text-white flex items-center gap-1">
-                                              <span>{comp.short_name || comp.name || key.toUpperCase()}</span>
-                                              {isSelected && (
-                                                <span className={`text-[8px] px-1 py-0.2 rounded border ${badgeClass}`}>
-                                                  {badgeText}
-                                                </span>
-                                              )}
-                                            </div>
-                                            <div className="text-[8.5px] text-slate-400 truncate max-w-[120px]">
-                                              {comp.model_type || comp.tag || 'AI Algorithm'}
-                                            </div>
-                                          </td>
-                                          <td className="py-2 px-1 text-right font-mono text-amber-300 font-bold">
-                                            ฿{displayPrice?.toLocaleString()}
-                                            {comp.future_price_per_wah && comp.price_per_wah && comp.future_price_per_wah !== comp.price_per_wah && (
-                                              <div className="text-[8px] text-slate-500 font-normal">
-                                                ฐาน ฿{comp.price_per_wah.toLocaleString()}
-                                              </div>
-                                            )}
-                                          </td>
-                                          <td className="py-2 px-1 text-center font-mono">
-                                            <span className={`inline-block px-1.5 py-0.5 rounded text-[9.5px] font-bold ${
-                                              growthVal > 0 
-                                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' 
-                                                : growthVal < 0 
-                                                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                                                : 'bg-slate-800 text-slate-400'
-                                            }`}>
-                                              {growthVal > 0 ? `+${growthVal}%` : `${growthVal}%`}
-                                            </span>
-                                          </td>
-                                          <td className="py-2 px-1 text-right font-mono">
-                                            <div className="text-slate-200 font-medium text-[9.5px]">
-                                              {metricLabel}
-                                            </div>
-                                            {typeof comp.diff_from_ground_truth_pct === 'number' ? (
-                                              <div className={`text-[8px] font-normal ${comp.diff_from_ground_truth_pct > 0 ? 'text-amber-400/90' : 'text-cyan-400/90'}`}>
-                                                {comp.diff_from_ground_truth_pct > 0 ? `+${comp.diff_from_ground_truth_pct}%` : `${comp.diff_from_ground_truth_pct}%`} จากราคาจริง
-                                              </div>
-                                            ) : scoreInfo ? (
-                                              <div className="text-[8px] text-slate-500 font-normal">
-                                                {scoreInfo}
-                                              </div>
-                                            ) : null}
-                                          </td>
-                                        </tr>
-                                      );
-                                    }
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
-
-                            {/* Official Ground Truth Residual Comparison if available */}
-                            {jobResult.price_prediction.details_json?.official_ground_truth && (
-                              <div className="mt-2.5 p-2.5 bg-emerald-950/40 border border-emerald-800/60 rounded-xl text-[10px] text-emerald-300 space-y-1">
-                                <div className="font-semibold flex items-center justify-between">
-                                  <span>🎯 เทียบราคาจริงกรมธนารักษ์ (Residual):</span>
-                                  <span className="font-mono font-bold text-white">
-                                    ฿{jobResult.price_prediction.details_json.official_ground_truth.price_per_wah?.toLocaleString()} / ตร.ว.
-                                  </span>
-                                </div>
-                                <div className="text-slate-300 text-[9px] flex items-center justify-between">
-                                  <span>แปลงติดกัน {jobResult.price_prediction.details_json.official_ground_truth.parcel_id} ({jobResult.price_prediction.details_json.official_ground_truth.nearest_dist_m} ม.)</span>
-                                  <span className="font-mono font-bold text-emerald-400">
-                                    ความคลาดเคลื่อนจริง: {jobResult.price_prediction.details_json.official_ground_truth.note}
-                                  </span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
